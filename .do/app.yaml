@@ -1,0 +1,75 @@
+name: flashcard-api
+region: nyc
+services:
+- name: api
+  github:
+    repo: your-username/flashcard
+    branch: main
+    deploy_on_push: true
+  run_command: gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8080 --timeout 120 --access-logfile - --error-logfile -
+  environment_slug: python
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  http_port: 8080
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 30
+    period_seconds: 10
+    timeout_seconds: 5
+    success_threshold: 1
+    failure_threshold: 3
+  envs:
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    type: SECRET
+  - key: OPENAI_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: JWT_SECRET_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: DEBUG
+    value: "False"
+    scope: RUN_TIME
+  - key: API_HOST
+    value: "0.0.0.0"
+    scope: RUN_TIME
+  - key: API_PORT
+    value: "8080"
+    scope: RUN_TIME
+  - key: CORS_ORIGINS
+    scope: RUN_TIME
+    type: SECRET
+  - key: STORAGE_TYPE
+    value: "s3"
+    scope: RUN_TIME
+  - key: AWS_ACCESS_KEY_ID
+    scope: RUN_TIME
+    type: SECRET
+  - key: AWS_SECRET_ACCESS_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: AWS_S3_BUCKET_NAME
+    scope: RUN_TIME
+    type: SECRET
+  - key: AWS_REGION
+    value: "us-east-1"
+    scope: RUN_TIME
+  routes:
+  - path: /
+  alerts:
+  - rule: CPU_UTILIZATION
+    disabled: false
+  - rule: MEM_UTILIZATION
+    disabled: false
+  - rule: RESTART_COUNT
+    disabled: false
+
+databases:
+- name: flashcard-db
+  engine: MYSQL
+  version: "8"
+  production: false
+  cluster_name: flashcard-db-cluster
+  db_name: flashcard_db
+  db_user: flashcard_user
