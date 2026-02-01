@@ -1,56 +1,61 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-gunicorn==21.2.0
-python-multipart==0.0.6
-python-dotenv==1.0.0
-pymysql==1.1.0
-sqlalchemy==2.0.23
-alembic==1.12.1
-pydantic==2.5.0
-pydantic-settings==2.1.0
+# Core Framework
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+gunicorn>=21.2.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+
+# Database
+pymysql>=1.1.0
+sqlalchemy>=2.0.23
+alembic>=1.12.1
+
+# Validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
 
 # AI & ML
-openai==1.3.5
-anthropic==0.18.1  # Claude API
-google-generativeai==0.3.2  # Gemini API
-google-cloud-vision==3.4.5
-google-cloud-documentai==2.20.1  # Document AI (better than Vision API)
-pillow==10.1.0
-pytesseract==0.3.10
+openai>=1.3.5
+anthropic>=0.18.1  # Claude API
+google-generativeai>=0.3.2  # Gemini API
+google-cloud-vision>=3.4.5
+google-cloud-documentai>=2.20.1  # Document AI (better than Vision API)
+pillow>=10.1.0
+pytesseract>=0.3.10
 # Note: transformers and torch are optional (for TrOCR fallback)
 # They are heavy dependencies and not required for core functionality
 # If needed, install separately: pip install transformers torch
 
 # OCR Services
-azure-cognitiveservices-vision-computervision==0.9.0  # Azure Read API
-msrest==0.7.1  # Azure authentication
+azure-cognitiveservices-vision-computervision>=0.9.0  # Azure Read API
+msrest>=0.7.1  # Azure authentication
 
 # PDF Processing
-PyPDF2==3.0.1
-pdfplumber==0.10.3  # Better than PyPDF2 (98%+ accuracy)
-pdf2image==1.16.3
+PyPDF2>=3.0.1
+pdfplumber>=0.10.3  # Better than PyPDF2 (98%+ accuracy)
+# pdf2image>=1.16.3  # Optional - requires poppler system library (may not work on Vercel)
 
-# NLP
-spacy==3.7.2
-nltk==3.8.1
+# NLP (optional - can be removed if not needed)
+# spacy>=3.7.2  # Commented out - may cause issues on Vercel
+# nltk>=3.8.1  # Commented out - may cause issues on Vercel
 
 # Image Processing
-opencv-python==4.8.1.78
-numpy==1.24.3
+opencv-python-headless>=4.8.1.78  # Use headless version for serverless
+numpy>=1.26.0  # Updated for Python 3.12 compatibility
 
 # File Storage
-boto3==1.29.7
-cloudinary==1.38.0
+boto3>=1.29.7
+cloudinary>=1.38.0
 
 # Authentication
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
 
 # Note: CORS is built into FastAPI (fastapi.middleware.cors.CORSMiddleware)
 # No separate package needed
 
 # Utils
-python-dateutil==2.8.2
-pytz==2023.3
+python-dateutil>=2.8.2
+pytz>=2023.3
 
 
