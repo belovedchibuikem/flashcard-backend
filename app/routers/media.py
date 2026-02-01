@@ -11,7 +11,25 @@ from datetime import datetime
 
 from app.database import get_db
 from app.models import User, Flashcard
-from app.models.media import MediaAttachment, ImageAnnotation, InteractiveDiagram
+# Import media models from the models package (which handles the import conflict)
+try:
+    from app.models import MediaAttachment, ImageAnnotation, InteractiveDiagram
+except ImportError:
+    # Fallback: import directly from file
+    import sys
+    import os
+    import importlib.util
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
+    media_path = os.path.join(models_dir, 'media.py')
+    if os.path.exists(media_path):
+        spec = importlib.util.spec_from_file_location("app_models_media", media_path)
+        media_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(media_module)
+        MediaAttachment = media_module.MediaAttachment
+        ImageAnnotation = media_module.ImageAnnotation
+        InteractiveDiagram = media_module.InteractiveDiagram
+    else:
+        raise ImportError("Could not find app/models/media.py")
 from app.routers.auth import get_current_user
 from app.config import settings
 from pydantic import BaseModel

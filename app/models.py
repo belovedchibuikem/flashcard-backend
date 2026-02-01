@@ -8,8 +8,9 @@ from sqlalchemy.sql import func
 from app.database import Base, IS_MYSQL
 import enum
 
-# Import media models
-from app.models.media import MediaAttachment, ImageAnnotation, InteractiveDiagram
+# Note: Media models (MediaAttachment, ImageAnnotation, InteractiveDiagram) are defined in app/models/media.py
+# They are imported directly where needed (e.g., in routers/media.py) to avoid import conflicts
+# between app/models.py (file) and app/models/ (directory)
 
 
 class FileType(str, enum.Enum):
