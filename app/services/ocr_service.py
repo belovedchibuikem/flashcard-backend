@@ -89,29 +89,46 @@ class OCRService:
     async def preprocess_image(self, image_path: str) -> str:
         """
         Preprocess image for better OCR results
+        Falls back gracefully if OpenCV/numpy not available
         """
         try:
-            from PIL import ImageEnhance, ImageFilter
-            import cv2
-            import numpy as np
-            
-            # Read image
-            img = cv2.imread(image_path)
-            
-            # Convert to grayscale
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
-            # Apply thresholding
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Denoise
-            denoised = cv2.fastNlMeansDenoising(thresh)
-            
-            # Save processed image
-            processed_path = image_path.replace('.', '_processed.')
-            cv2.imwrite(processed_path, denoised)
-            
-            return processed_path
+            # Try to use OpenCV if available
+            try:
+                import cv2
+                import numpy as np
+                
+                # Read image
+                img = cv2.imread(image_path)
+                if img is None:
+                    return image_path
+                
+                # Convert to grayscale
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                
+                # Apply thresholding
+                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                
+                # Denoise
+                denoised = cv2.fastNlMeansDenoising(thresh)
+                
+                # Save processed image
+                processed_path = image_path.replace('.', '_processed.')
+                cv2.imwrite(processed_path, denoised)
+                
+                return processed_path
+            except ImportError:
+                # OpenCV/numpy not available - use PIL instead
+                from PIL import Image, ImageEnhance, ImageFilter
+                
+                img = Image.open(image_path)
+                # Simple enhancement with PIL
+                enhancer = ImageEnhance.Contrast(img)
+                enhanced = enhancer.enhance(1.5)
+                enhanced = enhanced.convert('L')  # Grayscale
+                
+                processed_path = image_path.replace('.', '_processed.')
+                enhanced.save(processed_path)
+                return processed_path
         except Exception as e:
             print(f"Image preprocessing error: {e}")
             return image_path

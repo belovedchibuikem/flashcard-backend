@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "backend/**/*.py": {
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}

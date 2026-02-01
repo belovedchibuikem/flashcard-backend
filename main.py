@@ -58,8 +58,12 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Create database tables (only if database is available)
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created/verified")
+except Exception as e:
+    logger.warning(f"Could not create database tables: {e}. This is OK if database is not available yet.")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -109,20 +113,31 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint - returns status even if database is unavailable"""
+    health_status = {
+        "status": "healthy",
+        "api": "running",
+        "version": "1.0.0"
+    }
+    
+    # Check database connection (optional)
     try:
-        # Check database connection
         from app.database import SessionLocal
         from sqlalchemy import text
-        db = SessionLocal()
-        db.execute(text("SELECT 1"))
-        db.close()
-        return {"status": "healthy", "database": "connected"}
+        if settings.DATABASE_URL:
+            db = SessionLocal()
+            db.execute(text("SELECT 1"))
+            db.close()
+            health_status["database"] = "connected"
+        else:
+            health_status["database"] = "not_configured"
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "error": str(e)}
-        )
+        logger.warning(f"Database check failed: {e}")
+        health_status["database"] = "unavailable"
+        health_status["database_error"] = str(e)
+    
+    # Return 200 even if DB is unavailable (API is still functional)
+    return health_status
 
 
 if __name__ == "__main__":

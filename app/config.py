@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "mysql+pymysql://root:@localhost:3306/flashcard_db"
+        ""  # Empty default - must be set via environment variable
     )
     
     # OpenAI
