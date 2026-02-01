@@ -1,0 +1,53 @@
+# Minimal Requirements for Vercel Deployment
+# Only essential dependencies - removes all heavy packages
+
+# Core Framework (REQUIRED)
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+
+# Database (REQUIRED)
+pymysql>=1.1.0
+sqlalchemy>=2.0.23
+alembic>=1.12.1
+
+# Validation (REQUIRED)
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# AI APIs (REQUIRED - Core functionality)
+openai>=1.3.5
+anthropic>=0.18.1  # Claude API
+google-generativeai>=0.3.2  # Gemini API
+
+# Basic Image Processing (Lightweight)
+pillow>=10.1.0
+pytesseract>=0.3.10  # Basic OCR fallback
+
+# PDF Processing (Lightweight)
+PyPDF2>=3.0.1
+pdfplumber>=0.10.3
+
+# Authentication (REQUIRED)
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Utils (REQUIRED)
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+# REMOVED HEAVY DEPENDENCIES (to reduce bundle size):
+# - google-cloud-vision (very large - ~100MB+)
+# - google-cloud-documentai (very large - ~100MB+)
+# - azure-cognitiveservices-vision-computervision (large)
+# - opencv-python-headless (large - ~50MB+)
+# - numpy (large - ~20MB+, but may be needed by pillow)
+# - boto3 (large - ~30MB+)
+# - cloudinary (medium)
+# - spacy, nltk (very large)
+# - transformers, torch (very large - ~500MB+)
+# - pdf2image (requires system library)
+
+# NOTE: If you need these services, use them via API calls instead of SDKs
+# For example, use HTTP requests to Google Cloud Vision API instead of SDK
