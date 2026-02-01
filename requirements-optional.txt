@@ -1,0 +1,11 @@
+# Optional ML Dependencies
+# These are heavy dependencies that may not be needed for all deployments
+# Install with: pip install -r requirements-optional.txt
+
+# TrOCR (Transformer-based OCR) - Optional fallback OCR
+# Note: Requires significant memory and may not work on all platforms
+transformers==4.35.0
+torch==2.1.0
+
+# Note: For Python 3.12 compatibility, you may need to use:
+# torch>=2.2.0  # Newer versions support Python 3.12

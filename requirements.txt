@@ -17,8 +17,9 @@ google-cloud-vision==3.4.5
 google-cloud-documentai==2.20.1  # Document AI (better than Vision API)
 pillow==10.1.0
 pytesseract==0.3.10
-transformers==4.35.0  # For TrOCR
-torch==2.1.0  # For TrOCR
+# Note: transformers and torch are optional (for TrOCR fallback)
+# They are heavy dependencies and not required for core functionality
+# If needed, install separately: pip install transformers torch
 
 # OCR Services
 azure-cognitiveservices-vision-computervision==0.9.0  # Azure Read API
