@@ -17,6 +17,7 @@ alembic>=1.12.1
 # Validation
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+email-validator>=2.1.0  # Required for EmailStr type in Pydantic
 
 # AI & ML (Core - Required)
 openai>=1.3.5
