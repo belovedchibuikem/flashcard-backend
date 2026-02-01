@@ -5,7 +5,7 @@ SQLAlchemy database models
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum, DECIMAL, JSON, Date, BIGINT
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.database import Base
+from app.database import Base, IS_MYSQL
 import enum
 
 # Import media models
@@ -300,7 +300,8 @@ class DailyActivity(Base):
     streak_maintained = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
     
-    __table_args__ = ({"mysql_engine": "InnoDB"},)
+    # MySQL-specific table args (ignored by PostgreSQL)
+    __table_args__ = ({"mysql_engine": "InnoDB"},) if IS_MYSQL else ()
 
 
 # Social Features Models

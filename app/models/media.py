@@ -5,7 +5,7 @@ Rich Media Models for flashcards
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.database import Base
+from app.database import Base, IS_MYSQL
 
 
 class MediaAttachment(Base):
@@ -21,9 +21,8 @@ class MediaAttachment(Base):
     metadata = Column(JSON)  # Additional metadata (duration, dimensions, etc.)
     created_at = Column(DateTime, server_default=func.now())
     
-    __table_args__ = (
-        {"mysql_engine": "InnoDB"},
-    )
+    # MySQL-specific table args (ignored by PostgreSQL)
+    __table_args__ = ({"mysql_engine": "InnoDB"},) if IS_MYSQL else ()
 
 
 class ImageAnnotation(Base):
@@ -37,9 +36,8 @@ class ImageAnnotation(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
-    __table_args__ = (
-        {"mysql_engine": "InnoDB"},
-    )
+    # MySQL-specific table args (ignored by PostgreSQL)
+    __table_args__ = ({"mysql_engine": "InnoDB"},) if IS_MYSQL else ()
 
 
 class InteractiveDiagram(Base):
@@ -53,6 +51,5 @@ class InteractiveDiagram(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
-    __table_args__ = (
-        {"mysql_engine": "InnoDB"},
-    )
+    # MySQL-specific table args (ignored by PostgreSQL)
+    __table_args__ = ({"mysql_engine": "InnoDB"},) if IS_MYSQL else ()
