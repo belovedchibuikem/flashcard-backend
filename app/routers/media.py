@@ -398,7 +398,7 @@ async def upload_3d_model(
         file_url=file_url,
         file_size=file_size,
         mime_type=f"model/{model_format.lower()}",
-        metadata={"format": model_format.lower()}
+        media_metadata={"format": model_format.lower()}
     )
     db.add(attachment)
     db.commit()
@@ -475,7 +475,7 @@ async def get_flashcard_media(
                 "file_url": a.file_url,
                 "file_size": a.file_size,
                 "mime_type": a.mime_type,
-                "metadata": a.metadata
+                "metadata": a.media_metadata
             }
             for a in attachments
         ]

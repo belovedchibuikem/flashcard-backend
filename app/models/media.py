@@ -18,7 +18,8 @@ class MediaAttachment(Base):
     file_url = Column(String(500), nullable=False)
     file_size = Column(Integer)  # Size in bytes
     mime_type = Column(String(100))
-    metadata = Column(JSON)  # Additional metadata (duration, dimensions, etc.)
+    # Use 'name' parameter to map Python attribute to database column (metadata is reserved in SQLAlchemy)
+    media_metadata = Column("metadata", JSON)  # Additional metadata (duration, dimensions, etc.)
     created_at = Column(DateTime, server_default=func.now())
     
     # MySQL-specific table args (ignored by PostgreSQL)
