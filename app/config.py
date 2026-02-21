@@ -12,8 +12,12 @@ load_dotenv()
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
+    # Support both standard DATABASE_URL and Vercel Neon integration variables
+    # Vercel Neon native integration may use DATABASE_DB_URL__DATABASE_URL or just DATABASE_URL
+    DATABASE_URL: str = (
+        os.getenv("DATABASE_URL") or 
+        os.getenv("DATABASE_DB_URL__DATABASE_URL") or 
+        os.getenv("POSTGRES_URL") or
         ""  # Empty default - must be set via environment variable
     )
     
