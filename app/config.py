@@ -5,19 +5,23 @@ Application configuration settings
 from pydantic_settings import BaseSettings
 from typing import List
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     # Database
     # Support both standard DATABASE_URL and Vercel Neon integration variables
-    # Vercel Neon native integration may use DATABASE_DB_URL__DATABASE_URL or just DATABASE_URL
+    # Priority: Check Neon integration variables FIRST (they're more reliable)
+    # Vercel Neon native integration uses DATABASE_DB_URL__DATABASE_URL
     DATABASE_URL: str = (
-        os.getenv("DATABASE_URL") or 
-        os.getenv("DATABASE_DB_URL__DATABASE_URL") or 
-        os.getenv("POSTGRES_URL") or
+        os.getenv("DATABASE_DB_URL__DATABASE_URL") or  # Vercel Neon integration (highest priority)
+        os.getenv("POSTGRES_URL") or  # Vercel Postgres
+        os.getenv("DATABASE_URL") or  # Standard variable (fallback)
         ""  # Empty default - must be set via environment variable
     )
     
@@ -77,5 +81,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Validate DATABASE_URL and warn if it looks invalid
+if settings.DATABASE_URL:
+    # Check for common invalid patterns
+    invalid_patterns = ["@@@", "example", "localhost", "placeholder", "your-"]
+    if any(pattern in settings.DATABASE_URL.lower() for pattern in invalid_patterns):
+        logger.warning(
+            f"DATABASE_URL appears to contain invalid/placeholder values. "
+            f"Please check your Vercel environment variables. "
+            f"Using Neon integration? Ensure DATABASE_DB_URL__DATABASE_URL is set correctly."
+        )
 
 
