@@ -5,8 +5,14 @@ OCR Service for extracting text from images and handwritten notes
 import os
 from typing import Optional
 from PIL import Image
-import pytesseract
 from app.config import settings
+
+# Optional dependencies - handle gracefully if not available
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
 
 try:
     from google.cloud import vision
@@ -60,6 +66,9 @@ class OCRService:
     
     async def _extract_with_tesseract(self, image_path: str) -> str:
         """Extract text using Tesseract OCR"""
+        if not TESSERACT_AVAILABLE:
+            raise ImportError("pytesseract is not installed. Use external OCR APIs or install pytesseract.")
+        
         try:
             image = Image.open(image_path)
             text = pytesseract.image_to_string(image)
