@@ -15,7 +15,9 @@ from app.config import settings
 
 router = APIRouter()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Configure password context with bcrypt
+# Using 'bcrypt' scheme with proper configuration
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__ident="2b")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
@@ -25,17 +27,31 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Hash password using bcrypt. Bcrypt has a 72-byte limit."""
-    # Ensure password is a string and handle bcrypt's 72-byte limit
+    # Ensure password is a string
     if not isinstance(password, str):
         password = str(password)
     
-    # Check byte length and truncate if necessary (bcrypt limit is 72 bytes)
+    # Bcrypt has a 72-byte limit - truncate if necessary
+    # Encode to bytes to check length
     password_bytes = password.encode('utf-8')
     if len(password_bytes) > 72:
-        # Truncate to 72 bytes, then decode back to string
-        password = password_bytes[:72].decode('utf-8', errors='ignore')
+        # Truncate to exactly 72 bytes
+        password_bytes = password_bytes[:72]
+        # Decode back, handling potential incomplete UTF-8 sequences
+        password = password_bytes.decode('utf-8', errors='ignore')
+        # Remove any incomplete characters at the end
+        while len(password.encode('utf-8')) > 72:
+            password = password[:-1]
     
-    return pwd_context.hash(password)
+    # Hash the password - passlib handles the rest
+    try:
+        return pwd_context.hash(password)
+    except ValueError as e:
+        # Fallback: if still too long, truncate more aggressively
+        if "72 bytes" in str(e).lower():
+            password = password[:50]  # Safe truncation
+            return pwd_context.hash(password)
+        raise
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
