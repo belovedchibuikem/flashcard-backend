@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+import bcrypt
 from app.database import get_db
 from app.models import User
 from app.schemas import UserCreate, UserResponse, Token, LoginRequest
@@ -31,27 +32,20 @@ def get_password_hash(password: str) -> str:
     if not isinstance(password, str):
         password = str(password)
     
-    # Bcrypt has a 72-byte limit - truncate if necessary
-    # Encode to bytes to check length
+    # Convert to bytes for bcrypt (bcrypt works with bytes)
     password_bytes = password.encode('utf-8')
-    if len(password_bytes) > 72:
-        # Truncate to exactly 72 bytes
-        password_bytes = password_bytes[:72]
-        # Decode back, handling potential incomplete UTF-8 sequences
-        password = password_bytes.decode('utf-8', errors='ignore')
-        # Remove any incomplete characters at the end
-        while len(password.encode('utf-8')) > 72:
-            password = password[:-1]
     
-    # Hash the password - passlib handles the rest
-    try:
-        return pwd_context.hash(password)
-    except ValueError as e:
-        # Fallback: if still too long, truncate more aggressively
-        if "72 bytes" in str(e).lower():
-            password = password[:50]  # Safe truncation
-            return pwd_context.hash(password)
-        raise
+    # Bcrypt has a strict 72-byte limit - truncate if necessary
+    if len(password_bytes) > 72:
+        password_bytes = password_bytes[:72]
+    
+    # Use bcrypt directly to hash - this avoids passlib issues
+    # Generate salt and hash
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    
+    # Return as string (passlib format compatible)
+    return hashed.decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
@@ -116,6 +110,13 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     
     try:
         # Create new user
+        # Log password length for debugging (don't log actual password!)
+        import logging
+        logger = logging.getLogger(__name__)
+        password_len = len(user_data.password)
+        password_bytes_len = len(user_data.password.encode('utf-8'))
+        logger.info(f"Password length: {password_len} chars, {password_bytes_len} bytes")
+        
         hashed_password = get_password_hash(user_data.password)
         user = User(
             email=user_data.email.lower().strip(),
@@ -127,8 +128,15 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
         return user
+    except HTTPException:
+        # Re-raise HTTP exceptions (like from get_password_hash)
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error creating user: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 
 
