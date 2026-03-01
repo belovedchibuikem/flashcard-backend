@@ -4,6 +4,7 @@ Advanced AI Features router - Smart difficulty, concept mapping, adaptive learni
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -384,8 +385,13 @@ async def chat_with_tutor(
     """
     
     try:
-        response = ai_service.client.chat.completions.create(
-            model="gpt-4",
+        if not ai_service.openai_client:
+            raise HTTPException(
+                status_code=503,
+                detail="AI tutor is not configured. Please set OPENAI_API_KEY in your environment."
+            )
+        response = ai_service.openai_client.chat.completions.create(
+            model=getattr(ai_service, 'openai_model', 'gpt-4-turbo-preview'),
             messages=[
                 {"role": "system", "content": "You are a helpful AI tutor. Provide clear, educational explanations. Keep responses concise (2-3 paragraphs max)."},
                 {"role": "user", "content": prompt}
@@ -409,8 +415,8 @@ async def chat_with_tutor(
         Return as a JSON array of strings.
         """
         
-        suggestions_response = ai_service.client.chat.completions.create(
-            model="gpt-4",
+        suggestions_response = ai_service.openai_client.chat.completions.create(
+            model=getattr(ai_service, 'openai_model', 'gpt-4-turbo-preview'),
             messages=[
                 {"role": "system", "content": "You are a helpful assistant. Return only a JSON array of suggested questions."},
                 {"role": "user", "content": suggestions_prompt}

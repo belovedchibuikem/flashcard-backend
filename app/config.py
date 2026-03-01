@@ -61,10 +61,11 @@ class Settings(BaseSettings):
     API_PORT: int = int(os.getenv("API_PORT", "8000"))
     DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
     
-    # JWT
+    # JWT - long-lived tokens so users stay logged in for days/months
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
-    JWT_EXPIRATION_HOURS: int = int(os.getenv("JWT_EXPIRATION_HOURS", "24"))
+    # 90 days default; set JWT_EXPIRATION_DAYS or JWT_EXPIRATION_HOURS (legacy) to override
+    JWT_EXPIRATION_DAYS: int = int(os.getenv("JWT_EXPIRATION_DAYS", "90"))
     
     # CORS
     CORS_ORIGINS: List[str] = os.getenv(

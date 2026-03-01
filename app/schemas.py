@@ -158,7 +158,9 @@ class PracticeQuestionResponse(BaseModel):
     id: int
     question_text: str
     question_type: str
-    options: Optional[Dict[str, Any]] = None
+    options: Optional[List[Any]] = None  # MCQ options as list of strings
+    correct_answer: Optional[str] = None
+    explanation: Optional[str] = None
     difficulty_level: str
     predicted_exam_relevance: Decimal
     

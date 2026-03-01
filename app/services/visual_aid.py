@@ -11,7 +11,8 @@ class VisualAidService:
     """Service for generating visual memory aids"""
     
     def __init__(self):
-        self.client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        self.client = openai.OpenAI(api_key=api_key) if api_key else None
     
     async def generate_visual_aid(
         self,
@@ -23,6 +24,8 @@ class VisualAidService:
         In production, this would generate actual images
         """
         try:
+            if not self.client:
+                return None
             # Generate image using DALL-E
             response = self.client.images.generate(
                 model="dall-e-3",

@@ -68,10 +68,13 @@ async def generate_practice_questions(
 async def get_practice_questions(
     topic_id: Optional[int] = None,
     difficulty: Optional[str] = None,
+    count: Optional[int] = 10,
+    auto_generate: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get practice questions"""
+    """Get practice questions. Use count to limit results.
+    When auto_generate=true and no questions exist, generates from first available material."""
     query = db.query(PracticeQuestion).filter(PracticeQuestion.user_id == current_user.id)
     
     if topic_id:
@@ -80,7 +83,59 @@ async def get_practice_questions(
         query = query.filter(PracticeQuestion.difficulty_level == difficulty)
     
     questions = query.all()
+    
+    # Auto-generate from first material when empty and requested
+    if not questions and auto_generate:
+        materials = db.query(StudyMaterial).filter(
+            StudyMaterial.user_id == current_user.id
+        ).all()
+        material = next((m for m in materials if m.extracted_text and len((m.extracted_text or "").strip()) >= 50), None)
+        if material:
+            ai_questions = await ai_service.generate_practice_questions(
+                material.extracted_text, "mcq", count or 10
+            )
+            for ai_q in ai_questions:
+                q = PracticeQuestion(
+                    user_id=current_user.id,
+                    study_material_id=material.id,
+                    question_text=ai_q.get('question_text', ''),
+                    question_type='mcq',
+                    correct_answer=ai_q.get('correct_answer', ''),
+                    options=ai_q.get('options', []),
+                    explanation=ai_q.get('explanation', ''),
+                    difficulty_level=ai_q.get('difficulty', 'medium'),
+                    predicted_exam_relevance=float(ai_q.get('predicted_exam_relevance', 0.5))
+                )
+                db.add(q)
+                questions.append(q)
+            db.commit()
+    
+    if count is not None and count > 0:
+        questions = questions[:count]
     return questions
+
+
+@router.get("/exams")
+async def get_recent_exams(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get recent practice exam attempts"""
+    exams = db.query(PracticeExamAttempt).filter(
+        PracticeExamAttempt.user_id == current_user.id
+    ).order_by(PracticeExamAttempt.completed_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": e.id,
+            "exam_type": e.exam_type,
+            "score_percentage": float(e.score_percentage) if e.score_percentage else 0,
+            "correct_answers": e.correct_answers,
+            "total_questions": e.total_questions,
+            "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+        }
+        for e in exams
+    ]
 
 
 @router.post("/exam", status_code=status.HTTP_201_CREATED)
@@ -153,7 +208,7 @@ async def get_exam_results(
         raise HTTPException(status_code=404, detail="Exam not found")
     
     responses = db.query(PracticeExamResponseModel).filter(
-        PracticeExamResponse.exam_attempt_id == exam_id
+        PracticeExamResponseModel.exam_attempt_id == exam_id
     ).all()
     
     return {

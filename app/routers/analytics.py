@@ -22,19 +22,62 @@ async def get_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get progress analytics for specified period"""
+    """Get progress analytics for specified period.
+    Computes from ReviewSession/SpacedRepetition when ProgressAnalytics is empty."""
     start_date = date.today() - timedelta(days=days)
     
+    # Try stored ProgressAnalytics first
     query = db.query(ProgressAnalytics).filter(
         ProgressAnalytics.user_id == current_user.id,
         ProgressAnalytics.date >= start_date
     )
-    
     if topic_id:
         query = query.filter(ProgressAnalytics.topic_id == topic_id)
+    analytics = query.order_by(ProgressAnalytics.date.asc()).all()
     
-    analytics = query.order_by(ProgressAnalytics.date.desc()).all()
-    return analytics
+    if analytics:
+        return analytics
+    
+    # Compute from ReviewSession when no stored data
+    from decimal import Decimal
+    from sqlalchemy import cast, Date
+    
+    session_query = db.query(
+        func.date(ReviewSession.started_at).label('session_date'),
+        func.sum(ReviewSession.flashcards_reviewed).label('studied'),
+        func.sum(ReviewSession.correct_count).label('correct'),
+    ).filter(
+        ReviewSession.user_id == current_user.id,
+        func.date(ReviewSession.started_at) >= start_date
+    )
+    if topic_id:
+        session_query = session_query.filter(ReviewSession.topic_id == topic_id)
+    session_query = session_query.group_by(func.date(ReviewSession.started_at))
+    rows = session_query.all()
+    
+    # Build daily progress
+    result = []
+    for row in rows:
+        d = row.session_date
+        if isinstance(d, datetime):
+            d = d.date()
+        studied = int(row.studied or 0)
+        correct = int(row.correct or 0)
+        mastery = (Decimal(correct) / Decimal(studied) * 100) if studied > 0 else Decimal(0)
+        result.append({
+            "date": d,
+            "flashcards_studied": studied,
+            "flashcards_mastered": correct,
+            "practice_questions_answered": 0,
+            "practice_questions_correct": 0,
+            "study_time_minutes": 0,
+            "mastery_percentage": mastery,
+            "exam_readiness_score": mastery,
+        })
+    
+    # Sort by date ascending for chart
+    result.sort(key=lambda x: x["date"])
+    return result
 
 
 @router.get("/readiness", response_model=ExamReadinessResponse)
@@ -106,7 +149,7 @@ async def get_stats(
     total_flashcards = db.query(Flashcard).filter(Flashcard.user_id == current_user.id).count()
     
     # Mastered flashcards
-    mastered_sr = db.query(SpacedRepetition).join(Flashcard).filter(
+    mastered_sr = db.query(SpacedRepetition).filter(
         SpacedRepetition.user_id == current_user.id,
         SpacedRepetition.mastery_level == "mastered"
     ).count()

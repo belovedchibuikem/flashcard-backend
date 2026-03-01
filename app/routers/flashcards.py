@@ -42,6 +42,12 @@ async def generate_flashcards(
     # Generate flashcards using AI
     ai_flashcards = await ai_service.generate_flashcards(material.extracted_text, count)
     
+    if not ai_flashcards:
+        raise HTTPException(
+            status_code=503,
+            detail="AI flashcard generation is not available. Please set OPENAI_API_KEY or GOOGLE_GEMINI_API_KEY in your environment."
+        )
+    
     created_flashcards = []
     for ai_card in ai_flashcards:
         # Generate visual aid description
@@ -141,8 +147,29 @@ async def get_due_flashcards(
     """Get flashcards due for review"""
     due_sr = spaced_repetition_service.get_due_flashcards(current_user.id, db)
     flashcard_ids = [sr.flashcard_id for sr in due_sr]
-    
+
     flashcards = db.query(Flashcard).filter(Flashcard.id.in_(flashcard_ids)).all()
+    return flashcards
+
+
+@router.get("/mastered", response_model=List[FlashcardResponse])
+async def get_mastered_flashcards(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get mastered flashcards only"""
+    from app.models import SpacedRepetition
+    mastered_sr = db.query(SpacedRepetition).filter(
+        SpacedRepetition.user_id == current_user.id,
+        SpacedRepetition.mastery_level == "mastered"
+    ).all()
+    flashcard_ids = [sr.flashcard_id for sr in mastered_sr]
+    if not flashcard_ids:
+        return []
+    flashcards = db.query(Flashcard).filter(
+        Flashcard.id.in_(flashcard_ids),
+        Flashcard.user_id == current_user.id
+    ).all()
     return flashcards
 
 

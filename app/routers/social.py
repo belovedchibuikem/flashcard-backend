@@ -306,6 +306,42 @@ async def join_collaborative_session(
     return {"message": "Joined session successfully"}
 
 
+@router.get("/collaborative-sessions/{session_id}/participants")
+async def get_session_participants(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get participants of a collaborative session"""
+    session = db.query(CollaborativeSession).filter(
+        CollaborativeSession.id == session_id
+    ).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Get active participants
+    participants = db.query(CollaborativeSessionParticipant, User).join(
+        User, CollaborativeSessionParticipant.user_id == User.id
+    ).filter(
+        and_(
+            CollaborativeSessionParticipant.session_id == session_id,
+            CollaborativeSessionParticipant.left_at.is_(None)
+        )
+    ).all()
+    
+    participant_list = [
+        {
+            "user_id": p.user_id,
+            "username": u.username,
+            "joined_at": p.joined_at.isoformat()
+        }
+        for p, u in participants
+    ]
+    
+    return participant_list
+
+
 # Comments Endpoints
 @router.post("/flashcards/{flashcard_id}/comments", response_model=CommentResponse)
 async def create_comment(

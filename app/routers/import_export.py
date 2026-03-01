@@ -285,8 +285,8 @@ async def import_pdf_auto_extract(
     
     try:
         # Extract text from PDF (would use PyPDF2 or similar)
-        from app.services.enhanced_ocr_service import EnhancedOCRService
-        ocr_service = EnhancedOCRService()
+        from app.services.simple_ocr_service import SimpleOCRService
+        ocr_service = SimpleOCRService()
         extracted_text = await ocr_service.extract_text_from_pdf(tmp_path)
         
         if not extracted_text:

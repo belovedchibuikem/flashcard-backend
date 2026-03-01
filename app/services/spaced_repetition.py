@@ -93,9 +93,10 @@ class SpacedRepetitionService:
         db
     ) -> SpacedRepetition:
         """
-        Initialize spaced repetition tracking for a new flashcard
+        Initialize spaced repetition tracking for a new flashcard.
+        New cards are due immediately (next_review_at = now) so they appear in Due list.
         """
-        next_review = datetime.now() + timedelta(days=1)
+        next_review = datetime.now()
         
         sr = SpacedRepetition(
             user_id=user_id,

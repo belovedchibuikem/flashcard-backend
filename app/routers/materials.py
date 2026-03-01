@@ -12,12 +12,12 @@ from app.database import get_db
 from app.models import User, StudyMaterial, ProcessingStatus, FileType
 from app.schemas import StudyMaterialResponse, StudyMaterialCreate
 from app.routers.auth import get_current_user
-from app.services.enhanced_ocr_service import EnhancedOCRService
+from app.services.simple_ocr_service import SimpleOCRService
 from app.services.enhanced_ai_service import EnhancedAIService
 from app.config import settings
 
 router = APIRouter()
-ocr_service = EnhancedOCRService()
+ocr_service = SimpleOCRService()
 ai_service = EnhancedAIService()
 
 

@@ -40,6 +40,7 @@ passlib[bcrypt]>=1.7.4
 # Utils
 python-dateutil>=2.8.2
 pytz>=2023.3
+httpx>=0.25.0
 
 # REMOVED HEAVY DEPENDENCIES (to stay under 250MB limit):
 # - gunicorn (not needed on Vercel - uses uvicorn)

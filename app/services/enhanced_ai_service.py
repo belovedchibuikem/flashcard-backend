@@ -31,19 +31,22 @@ class EnhancedAIService:
     """
     
     def __init__(self):
-        # OpenAI (GPT-4 Turbo/GPT-4o)
-        self.openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        # OpenAI (GPT-4 Turbo/GPT-4o) - only init if key is set
+        openai_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
         self.openai_model = getattr(settings, 'OPENAI_MODEL', 'gpt-4-turbo-preview')  # or 'gpt-4o'
         
         # Claude (for long documents)
-        if CLAUDE_AVAILABLE and hasattr(settings, 'ANTHROPIC_API_KEY'):
-            self.claude_client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '') or ''
+        if CLAUDE_AVAILABLE and anthropic_key:
+            self.claude_client = anthropic.Anthropic(api_key=anthropic_key)
         else:
             self.claude_client = None
         
         # Gemini (for fast/cost-efficient tasks)
-        if GEMINI_AVAILABLE and hasattr(settings, 'GOOGLE_GEMINI_API_KEY'):
-            genai.configure(api_key=settings.GOOGLE_GEMINI_API_KEY)
+        gemini_key = getattr(settings, 'GOOGLE_GEMINI_API_KEY', '') or ''
+        if GEMINI_AVAILABLE and gemini_key:
+            genai.configure(api_key=gemini_key)
             self.gemini_model = genai.GenerativeModel('gemini-2.5-flash-lite')
         else:
             self.gemini_model = None
@@ -66,6 +69,8 @@ class EnhancedAIService:
     
     async def _extract_concepts_with_openai(self, text: str) -> List[Dict[str, Any]]:
         """Extract concepts using GPT-4 Turbo"""
+        if not self.openai_client:
+            return []
         prompt = f"""
         Analyze the following study material and extract key concepts, definitions, formulas, and important facts.
         Focus on exam-relevant content. Return a JSON array with objects containing:
@@ -144,11 +149,16 @@ class EnhancedAIService:
         """
         if use_fast_model and self.gemini_model:
             return await self._generate_flashcards_with_gemini(text, count)
-        
-        return await self._generate_flashcards_with_openai(text, count)
+        if self.openai_client:
+            return await self._generate_flashcards_with_openai(text, count)
+        if self.gemini_model:
+            return await self._generate_flashcards_with_gemini(text, count)
+        return []
     
     async def _generate_flashcards_with_openai(self, text: str, count: int) -> List[Dict[str, Any]]:
         """Generate flashcards using GPT-4 Turbo"""
+        if not self.openai_client:
+            return []
         prompt = f"""
         Generate {count} high-quality flashcards from the following study material.
         Create diverse flashcard types: definitions, concept explanations, problem-solving, and true/false.
@@ -222,6 +232,8 @@ class EnhancedAIService:
         count: int = 5
     ) -> List[Dict[str, Any]]:
         """Generate practice questions using GPT-4 Turbo"""
+        if not self.openai_client:
+            return []
         prompt = f"""
         Generate {count} {question_type} practice exam questions from the following study material.
         Focus on topics likely to appear on exams. Predict exam-relevant questions.
@@ -265,6 +277,8 @@ class EnhancedAIService:
         flashcard_type: str
     ) -> str:
         """Generate visual description using GPT-4 Turbo"""
+        if not self.openai_client:
+            return ""
         prompt = f"""
         Create a visual description for a memory aid for this concept:
         Concept: {concept}
@@ -290,6 +304,57 @@ class EnhancedAIService:
             print(f"Error generating visual description: {e}")
             return ""
     
+    async def analyze_difficulty(self, user_responses: List[Dict[str, Any]], flashcard_id: int) -> Dict[str, Any]:
+        """Analyze user performance to determine optimal difficulty level"""
+        if not self.openai_client:
+            return {
+                "current_difficulty": "medium",
+                "recommended_difficulty": "medium",
+                "knowledge_gaps": [],
+                "mistake_patterns": [],
+                "mastery_score": 50.0
+            }
+        prompt = f"""
+        Analyze the following user performance data and determine:
+        1. Current difficulty level (easy, medium, hard)
+        2. Recommended next difficulty
+        3. Knowledge gaps identified
+        4. Mistake patterns
+
+        User Responses:
+        {str(user_responses)[:2000]}
+
+        Return JSON with:
+        - current_difficulty: easy/medium/hard
+        - recommended_difficulty: easy/medium/hard
+        - knowledge_gaps: array of concepts
+        - mistake_patterns: array of common mistakes
+        - mastery_score: 0-100
+        """
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing learning patterns and adapting difficulty levels."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+                response_format={"type": "json_object"}
+            )
+            import json
+            result = json.loads(response.choices[0].message.content)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            print(f"Error analyzing difficulty: {e}")
+            return {
+                "current_difficulty": "medium",
+                "recommended_difficulty": "medium",
+                "knowledge_gaps": [],
+                "mistake_patterns": [],
+                "mastery_score": 50.0
+            }
+
     async def chunk_content(self, text: str) -> List[Dict[str, str]]:
         """
         Break content into optimal learning chunks
@@ -302,6 +367,8 @@ class EnhancedAIService:
     
     async def _chunk_content_with_openai(self, text: str) -> List[Dict[str, str]]:
         """Chunk content using GPT-4 Turbo"""
+        if not self.openai_client:
+            return []
         prompt = f"""
         Break the following study material into optimal learning chunks.
         Each chunk should be:
@@ -377,4 +444,95 @@ class EnhancedAIService:
         except Exception as e:
             print(f"Error chunking content with Claude: {e}")
             return [{"title": "Content", "content": text, "related_concepts": []}]
+
+    async def generate_concept_map(self, concepts: List[str], topic: str) -> Dict[str, Any]:
+        """Generate a concept map showing relationships between concepts"""
+        if not self.openai_client:
+            return {"nodes": [], "edges": [], "central_concept": topic}
+        prompt = f"""
+        Create a concept map for the topic: {topic}
+        Concepts to include: {', '.join(concepts[:50])}
+        Return JSON with: nodes (array of {{id, label, type, description}}),
+        edges (array of {{source, target, relationship, strength}}),
+        central_concept (main concept). Return only valid JSON.
+        """
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at creating concept maps. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
+            import json
+            result = json.loads(response.choices[0].message.content)
+            return result if isinstance(result, dict) else {"nodes": [], "edges": [], "central_concept": topic}
+        except Exception as e:
+            print(f"Error generating concept map: {e}")
+            return {"nodes": [], "edges": [], "central_concept": topic}
+
+    async def suggest_adaptive_path(self, user_id: int, topic_id: int, performance_data: Dict[str, Any]) -> List[int]:
+        """Suggest optimal learning path based on user performance"""
+        if not self.openai_client:
+            return performance_data.get("flashcard_ids", [])
+        prompt = f"""
+        Based on this performance data, suggest an optimal learning sequence of flashcard IDs.
+        Performance Data: {str(performance_data)[:2000]}
+        Return JSON array of flashcard IDs in recommended order. Only IDs, no other text.
+        """
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at personalized learning paths. Return only a JSON array of IDs."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.4,
+                max_tokens=1000,
+                response_format={"type": "json_object"}
+            )
+            import json
+            result = json.loads(response.choices[0].message.content)
+            flashcard_ids = performance_data.get("flashcard_ids", [])
+            ids = result if isinstance(result, list) else (result.get("path") or result.get("ids") or []) if isinstance(result, dict) else []
+            try:
+                valid = [int(x) for x in ids]
+                return [i for i in valid if i in flashcard_ids] if valid else flashcard_ids
+            except (ValueError, TypeError):
+                return flashcard_ids
+        except Exception as e:
+            print(f"Error suggesting adaptive path: {e}")
+            return performance_data.get("flashcard_ids", [])
+
+    async def generate_questions_from_notes(self, notes_text: str, count: int = 10) -> List[Dict[str, Any]]:
+        """Generate questions directly from notes/text"""
+        if not self.openai_client:
+            return []
+        prompt = f"""
+        Generate {count} study questions from these notes. Return JSON array with objects containing:
+        question_text, correct_answer, question_type (mcq/short_answer), difficulty, options (for mcq), explanation.
+        Notes: {notes_text[:4000]}
+        Return only valid JSON array.
+        """
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at creating study questions. Return only valid JSON array."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=3000,
+                response_format={"type": "json_object"}
+            )
+            import json
+            result = json.loads(response.choices[0].message.content)
+            questions = result.get("questions", result) if isinstance(result, dict) else result
+            return questions if isinstance(questions, list) else []
+        except Exception as e:
+            print(f"Error generating questions from notes: {e}")
+            return []
 
