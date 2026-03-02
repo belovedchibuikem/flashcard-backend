@@ -2,17 +2,25 @@
 Analytics and Progress Tracking router
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func, cast, Date
 from typing import List
 from datetime import datetime, date, timedelta
+from decimal import Decimal
 from app.database import get_db
 from app.models import User, ProgressAnalytics, SpacedRepetition, ReviewSession, PracticeExamAttempt, Flashcard
 from app.schemas import ProgressAnalyticsResponse, ExamReadinessResponse
 from app.routers.auth import get_current_user
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _safe_date_expr(column):
+    """Use cast for portability across MySQL and PostgreSQL."""
+    return cast(column, Date)
 
 
 @router.get("/progress", response_model=List[ProgressAnalyticsResponse])
@@ -24,6 +32,14 @@ async def get_progress(
 ):
     """Get progress analytics for specified period.
     Computes from ReviewSession/SpacedRepetition when ProgressAnalytics is empty."""
+    try:
+        return _get_progress_impl(days, topic_id, current_user, db)
+    except Exception as e:
+        logger.exception("Analytics progress error: %s", e)
+        return []
+
+
+def _get_progress_impl(days: int, topic_id, current_user, db):
     start_date = date.today() - timedelta(days=days)
     
     # Try stored ProgressAnalytics first
@@ -40,19 +56,19 @@ async def get_progress(
     
     # Compute from ReviewSession when no stored data
     from decimal import Decimal
-    from sqlalchemy import cast, Date
-    
+
+    date_expr = _safe_date_expr(ReviewSession.started_at)
     session_query = db.query(
-        func.date(ReviewSession.started_at).label('session_date'),
+        date_expr.label('session_date'),
         func.sum(ReviewSession.flashcards_reviewed).label('studied'),
         func.sum(ReviewSession.correct_count).label('correct'),
     ).filter(
         ReviewSession.user_id == current_user.id,
-        func.date(ReviewSession.started_at) >= start_date
+        date_expr >= start_date
     )
     if topic_id:
         session_query = session_query.filter(ReviewSession.topic_id == topic_id)
-    session_query = session_query.group_by(func.date(ReviewSession.started_at))
+    session_query = session_query.group_by(date_expr)
     rows = session_query.all()
     
     # Build daily progress
@@ -87,6 +103,19 @@ async def get_exam_readiness(
     db: Session = Depends(get_db)
 ):
     """Calculate exam readiness score"""
+    try:
+        return _get_readiness_impl(topic_id, current_user, db)
+    except Exception as e:
+        logger.exception("Analytics readiness error: %s", e)
+        return {
+            "overall_readiness": 0.0,
+            "topic_readiness": {},
+            "weak_areas": [],
+            "recommended_study_time": 30
+        }
+
+
+def _get_readiness_impl(topic_id, current_user, db):
     # Get mastery statistics
     sr_query = db.query(SpacedRepetition).filter(
         SpacedRepetition.user_id == current_user.id
@@ -144,49 +173,62 @@ async def get_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get overall statistics"""
-    # Total flashcards
-    total_flashcards = db.query(Flashcard).filter(Flashcard.user_id == current_user.id).count()
-    
-    # Mastered flashcards
-    mastered_sr = db.query(SpacedRepetition).filter(
-        SpacedRepetition.user_id == current_user.id,
-        SpacedRepetition.mastery_level == "mastered"
-    ).count()
-    
-    # Study sessions
-    total_sessions = db.query(ReviewSession).filter(
-        ReviewSession.user_id == current_user.id
-    ).count()
-    
-    # Practice exams
-    total_exams = db.query(PracticeExamAttempt).filter(
-        PracticeExamAttempt.user_id == current_user.id
-    ).count()
-    
-    # Study streak (consecutive days with study sessions)
-    today = date.today()
-    streak = 0
-    check_date = today
-    while True:
-        sessions_today = db.query(ReviewSession).filter(
-            ReviewSession.user_id == current_user.id,
-            func.date(ReviewSession.started_at) == check_date
+    """Get overall statistics. Returns safe defaults on any error."""
+    try:
+        # Total flashcards
+        total_flashcards = db.query(Flashcard).filter(Flashcard.user_id == current_user.id).count()
+        
+        # Mastered flashcards
+        mastered_sr = db.query(SpacedRepetition).filter(
+            SpacedRepetition.user_id == current_user.id,
+            SpacedRepetition.mastery_level == "mastered"
         ).count()
         
-        if sessions_today > 0:
-            streak += 1
-            check_date -= timedelta(days=1)
-        else:
-            break
-    
-    return {
-        "total_flashcards": total_flashcards,
-        "mastered_flashcards": mastered_sr,
-        "total_sessions": total_sessions,
-        "total_exams": total_exams,
-        "study_streak": streak,
-        "mastery_percentage": (mastered_sr / total_flashcards * 100) if total_flashcards > 0 else 0
-    }
+        # Study sessions
+        total_sessions = db.query(ReviewSession).filter(
+            ReviewSession.user_id == current_user.id
+        ).count()
+        
+        # Practice exams
+        total_exams = db.query(PracticeExamAttempt).filter(
+            PracticeExamAttempt.user_id == current_user.id
+        ).count()
+        
+        # Study streak (consecutive days with study sessions, max 365 to avoid runaway)
+        today = date.today()
+        streak = 0
+        check_date = today
+        date_expr = _safe_date_expr(ReviewSession.started_at)
+        for _ in range(365):
+            sessions_today = db.query(ReviewSession).filter(
+                ReviewSession.user_id == current_user.id,
+                date_expr == check_date
+            ).count()
+            
+            if sessions_today > 0:
+                streak += 1
+                check_date -= timedelta(days=1)
+            else:
+                break
+        
+        return {
+            "total_flashcards": total_flashcards,
+            "mastered_flashcards": mastered_sr,
+            "total_sessions": total_sessions,
+            "total_exams": total_exams,
+            "study_streak": streak,
+            "mastery_percentage": (mastered_sr / total_flashcards * 100) if total_flashcards > 0 else 0
+        }
+    except Exception as e:
+        logger.exception("Analytics stats error: %s", e)
+        # Return safe defaults so dashboard still renders
+        return {
+            "total_flashcards": 0,
+            "mastered_flashcards": 0,
+            "total_sessions": 0,
+            "total_exams": 0,
+            "study_streak": 0,
+            "mastery_percentage": 0
+        }
 
 
