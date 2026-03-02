@@ -2,9 +2,12 @@
 Authentication router
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -82,6 +85,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    token = (token or "").strip()
+    if not token:
+        raise credentials_exception
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         sub = payload.get("sub")
@@ -99,7 +105,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    user = db.query(User).filter(User.id == user_id).first()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    except SQLAlchemyError as e:
+        logger = logging.getLogger(__name__)
+        logger.error(
+            "Database error during auth (Vercel Postgres): %s",
+            str(e),
+            exc_info=True,
+            extra={"user_id": user_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please try again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if user is None:
         raise credentials_exception
     return user
@@ -128,11 +148,10 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(status_code=400, detail="Username already taken")
     
+    logger = logging.getLogger(__name__)
     try:
         # Create new user
         # Log password length for debugging (don't log actual password!)
-        import logging
-        logger = logging.getLogger(__name__)
         password_len = len(user_data.password)
         password_bytes_len = len(user_data.password.encode('utf-8'))
         logger.info(f"Password length: {password_len} chars, {password_bytes_len} bytes")
@@ -159,10 +178,19 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
         # Re-raise HTTP exceptions (like from get_password_hash)
         db.rollback()
         raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(
+            "Database error during registration (Vercel Postgres): %s",
+            str(e),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please try again.",
+        )
     except Exception as e:
         db.rollback()
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Error creating user: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 
@@ -170,6 +198,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Login and get access token"""
+    logger = logging.getLogger(__name__)
     try:
         user = db.query(User).filter(User.email == form_data.username).first()
         if not user:
@@ -193,10 +222,17 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     except HTTPException:
         # Re-raise HTTP exceptions (like authentication errors)
         raise
+    except SQLAlchemyError as e:
+        logger.error(
+            "Database error during login (Vercel Postgres): %s",
+            str(e),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please try again.",
+        )
     except Exception as e:
-        # Log unexpected errors
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Login error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -208,5 +244,24 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current user information"""
     return current_user
+
+
+@router.get("/verify-token")
+async def verify_token_debug(token: str = Depends(oauth2_scheme)):
+    """
+    Debug endpoint: Decode JWT and return payload (no DB lookup).
+    Helps diagnose if 401 is from JWT decode or user lookup.
+    Only returns payload when DEBUG=true.
+    """
+    if not settings.DEBUG:
+        raise HTTPException(status_code=404, detail="Not found")
+    token = (token or "").strip()
+    if not token:
+        return {"error": "No token provided"}
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        return {"valid": True, "payload": payload, "user_id": payload.get("sub")}
+    except JWTError as e:
+        return {"valid": False, "error": str(e), "hint": "JWT decode failed - check JWT_SECRET_KEY matches between login and this request"}
 
 

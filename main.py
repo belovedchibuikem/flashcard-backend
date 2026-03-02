@@ -132,7 +132,11 @@ async def health_check():
         else:
             health_status["database"] = "not_configured"
     except Exception as e:
-        logger.warning(f"Database check failed: {e}")
+        logger.warning(
+            "Database check failed (Vercel Postgres): %s",
+            str(e),
+            exc_info=True,
+        )
         health_status["database"] = "unavailable"
         health_status["database_error"] = str(e)
     

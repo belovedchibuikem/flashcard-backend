@@ -23,8 +23,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def database_exception_handler(request: Request, exc: SQLAlchemyError):
-    """Handle database errors"""
-    logger.error(f"Database error: {str(exc)}")
+    """Handle database errors - system uses Vercel built-in Postgres"""
+    logger.error(
+        "Database error (Vercel Postgres): %s",
+        str(exc),
+        exc_info=True,
+        extra={"path": request.url.path, "method": request.method},
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
