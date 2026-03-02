@@ -74,9 +74,9 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
         expire = datetime.utcnow() + timedelta(days=settings.JWT_EXPIRATION_DAYS)
     # JWT exp must be numeric Unix timestamp (RFC 7519)
     to_encode.update({"exp": int(expire.timestamp())})
-    # Ensure sub is int for consistent lookup
-    if "sub" in to_encode and not isinstance(to_encode["sub"], int):
-        to_encode["sub"] = int(to_encode["sub"])
+    # RFC 7519: sub (Subject) must be a string - jose library enforces this
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
     encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.JWT_ALGORITHM)
     return encoded_jwt if isinstance(encoded_jwt, str) else encoded_jwt.decode("utf-8")
 
