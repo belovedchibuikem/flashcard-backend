@@ -6,11 +6,24 @@ from pydantic_settings import BaseSettings
 from typing import List
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from backend/ and project root (for Vercel api/index.py which chdirs to backend)
+_backend_dir = Path(__file__).resolve().parent.parent
+load_dotenv(_backend_dir / ".env")
+load_dotenv(_backend_dir.parent / ".env")  # project root
 
 logger = logging.getLogger(__name__)
+
+
+def _get_jwt_secret() -> str:
+    """Read JWT secret from env - check multiple var names for Vercel compatibility."""
+    return (
+        os.getenv("JWT_SECRET_KEY")
+        or os.getenv("JWT_SECRET")
+        or "your-secret-key-change-in-production"
+    )
 
 
 class Settings(BaseSettings):
@@ -62,7 +75,7 @@ class Settings(BaseSettings):
     DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
     
     # JWT - long-lived tokens so users stay logged in for days/months
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+    JWT_SECRET_KEY: str = _get_jwt_secret()
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     # 90 days default; set JWT_EXPIRATION_DAYS or JWT_EXPIRATION_HOURS (legacy) to override
     JWT_EXPIRATION_DAYS: int = int(os.getenv("JWT_EXPIRATION_DAYS", "90"))
@@ -93,5 +106,15 @@ if settings.DATABASE_URL:
             f"Please check your Vercel environment variables. "
             f"Using Neon integration? Ensure DATABASE_DB_URL__DATABASE_URL is set correctly."
         )
+
+# Validate JWT_SECRET_KEY on Vercel - must be set explicitly
+_IS_VERCEL = os.getenv("VERCEL") == "1"
+_DEFAULT_JWT = "your-secret-key-change-in-production"
+if _IS_VERCEL and (not settings.JWT_SECRET_KEY or settings.JWT_SECRET_KEY == _DEFAULT_JWT):
+    logger.critical(
+        "JWT_SECRET_KEY is not set or is default on Vercel. "
+        "Auth will fail: set JWT_SECRET_KEY in Vercel Dashboard → Settings → Environment Variables, "
+        "then redeploy. Example: openssl rand -hex 32"
+    )
 
 

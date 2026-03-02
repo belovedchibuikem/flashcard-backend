@@ -6,13 +6,18 @@ The `/auth/me` and other protected routes return 401 "Could not validate credent
 
 ### Steps
 
-1. **Vercel Dashboard** → Your Project → **Settings** → **Environment Variables**
-2. Add:
-   - **Name:** `JWT_SECRET_KEY`
-   - **Value:** A strong random string (e.g. run `openssl rand -hex 32` locally)
+1. **Generate a secret** (run locally):
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. **Vercel Dashboard** → Your Project → **Settings** → **Environment Variables**
+3. Add:
+   - **Name:** `JWT_SECRET_KEY` (exactly this; the backend also checks `JWT_SECRET`)
+   - **Value:** Paste the output from step 1
    - **Environments:** Production, Preview, Development
 
-3. **Redeploy** the project after adding the variable.
+4. **Redeploy** the project after adding the variable (Deployments → ⋮ → Redeploy).
 
 ### Why this matters
 
