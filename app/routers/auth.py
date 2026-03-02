@@ -18,6 +18,7 @@ from app.schemas import UserCreate, UserResponse, Token, LoginRequest
 from app.config import settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Configure password context with bcrypt
 # Using 'bcrypt' scheme with proper configuration
@@ -79,36 +80,48 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     return encoded_jwt if isinstance(encoded_jwt, str) else encoded_jwt.decode("utf-8")
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
-    credentials_exception = HTTPException(
+def _auth_error(reason: str, hint: str = None):
+    """Build 401 response with reason for debugging."""
+    detail = "Could not validate credentials"
+    if hint:
+        detail = f"{detail}: {hint}"
+    logger.warning("Auth validation failed: %s", reason)
+    return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     token = (token or "").strip()
     if not token:
-        raise credentials_exception
+        raise _auth_error("missing_token", "no token provided")
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         sub = payload.get("sub")
         if sub is None:
-            raise credentials_exception
+            raise _auth_error("invalid_payload", "token missing 'sub' claim")
         user_id = int(sub) if not isinstance(sub, int) else sub
-    except JWTError:
-        raise credentials_exception
-    except (TypeError, ValueError):
-        raise credentials_exception
+    except JWTError as e:
+        logger.warning("JWT decode failed: %s", str(e))
+        raise _auth_error(
+            "jwt_decode_failed",
+            f"invalid or expired token (check JWT_SECRET_KEY matches between deployments)",
+        )
+    except (TypeError, ValueError) as e:
+        raise _auth_error("invalid_sub", f"invalid user id in token: {e}")
     except Exception as e:
+        logger.warning("Token validation error: %s", str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token validation error: {str(e)}",
+            detail=f"Token validation error: {str(e)}" if settings.DEBUG else "Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
     try:
         user = db.query(User).filter(User.id == user_id).first()
     except SQLAlchemyError as e:
-        logger = logging.getLogger(__name__)
         logger.error(
             "Database error during auth (Vercel Postgres): %s",
             str(e),
@@ -121,7 +134,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
             headers={"WWW-Authenticate": "Bearer"},
         )
     if user is None:
-        raise credentials_exception
+        raise _auth_error("user_not_found", f"user id {user_id} not found in database")
     return user
 
 
