@@ -264,10 +264,7 @@ async def verify_token_debug(token: str = Depends(oauth2_scheme)):
     """
     Debug endpoint: Decode JWT and return payload (no DB lookup).
     Helps diagnose if 401 is from JWT decode or user lookup.
-    Only returns payload when DEBUG=true.
     """
-    if not settings.DEBUG:
-        raise HTTPException(status_code=404, detail="Not found")
     token = (token or "").strip()
     if not token:
         return {"error": "No token provided"}
@@ -276,5 +273,24 @@ async def verify_token_debug(token: str = Depends(oauth2_scheme)):
         return {"valid": True, "payload": payload, "user_id": payload.get("sub")}
     except JWTError as e:
         return {"valid": False, "error": str(e), "hint": "JWT decode failed - check JWT_SECRET_KEY matches between login and this request"}
+
+
+@router.get("/diagnose")
+async def auth_diagnose():
+    """
+    Diagnostic endpoint: Check if JWT_SECRET_KEY is configured (no auth required).
+    Helps verify env vars are loaded on Vercel.
+    """
+    import os
+    default_secret = "your-secret-key-change-in-production"
+    secret = settings.JWT_SECRET_KEY or ""
+    is_vercel = os.getenv("VERCEL") == "1"
+    return {
+        "secret_configured": bool(secret and secret != default_secret),
+        "secret_length": len(secret),
+        "is_default_secret": secret == default_secret,
+        "is_vercel": is_vercel,
+        "hint": "If secret_configured is false, set JWT_SECRET_KEY in Vercel and redeploy. Then LOG IN AGAIN to get a fresh token."
+    }
 
 
