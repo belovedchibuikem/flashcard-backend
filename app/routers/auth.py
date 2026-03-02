@@ -67,9 +67,13 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(days=settings.JWT_EXPIRATION_DAYS)
-    to_encode.update({"exp": expire})
+    # JWT exp must be numeric Unix timestamp (RFC 7519)
+    to_encode.update({"exp": int(expire.timestamp())})
+    # Ensure sub is int for consistent lookup
+    if "sub" in to_encode and not isinstance(to_encode["sub"], int):
+        to_encode["sub"] = int(to_encode["sub"])
     encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
-    return encoded_jwt
+    return encoded_jwt if isinstance(encoded_jwt, str) else encoded_jwt.decode("utf-8")
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
@@ -80,10 +84,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     )
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        user_id: int = payload.get("sub")
-        if user_id is None:
+        sub = payload.get("sub")
+        if sub is None:
             raise credentials_exception
-    except JWTError as e:
+        user_id = int(sub) if not isinstance(sub, int) else sub
+    except JWTError:
+        raise credentials_exception
+    except (TypeError, ValueError):
         raise credentials_exception
     except Exception as e:
         raise HTTPException(
