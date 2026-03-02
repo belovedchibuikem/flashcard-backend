@@ -66,6 +66,7 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
+    secret = _get_jwt_secret()
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -76,7 +77,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     # Ensure sub is int for consistent lookup
     if "sub" in to_encode and not isinstance(to_encode["sub"], int):
         to_encode["sub"] = int(to_encode["sub"])
-    encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.JWT_ALGORITHM)
     return encoded_jwt if isinstance(encoded_jwt, str) else encoded_jwt.decode("utf-8")
 
 
@@ -93,21 +94,30 @@ def _auth_error(reason: str, hint: str = None):
     )
 
 
+def _get_jwt_secret() -> str:
+    """Read secret at runtime to avoid stale module-level cache on Vercel."""
+    import os
+    return os.getenv("JWT_SECRET_KEY") or os.getenv("JWT_SECRET") or settings.JWT_SECRET_KEY
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     token = (token or "").strip()
     if not token:
         raise _auth_error("missing_token", "no token provided")
+    secret = _get_jwt_secret()
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token, secret, algorithms=[settings.JWT_ALGORITHM])
         sub = payload.get("sub")
         if sub is None:
             raise _auth_error("invalid_payload", "token missing 'sub' claim")
         user_id = int(sub) if not isinstance(sub, int) else sub
     except JWTError as e:
-        logger.warning("JWT decode failed: %s", str(e))
-        raise _auth_error(
-            "jwt_decode_failed",
-            f"invalid or expired token (check JWT_SECRET_KEY matches between deployments)",
+        err_msg = str(e)
+        logger.warning("JWT decode failed: %s", err_msg)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Could not validate credentials: {err_msg}",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     except (TypeError, ValueError) as e:
         raise _auth_error("invalid_sub", f"invalid user id in token: {e}")
@@ -269,7 +279,7 @@ async def verify_token_debug(token: str = Depends(oauth2_scheme)):
     if not token:
         return {"error": "No token provided"}
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token, _get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM])
         return {"valid": True, "payload": payload, "user_id": payload.get("sub")}
     except JWTError as e:
         return {"valid": False, "error": str(e), "hint": "JWT decode failed - check JWT_SECRET_KEY matches between login and this request"}
