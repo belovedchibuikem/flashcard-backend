@@ -182,6 +182,43 @@ async def accept_buddy_request(
     return {"message": "Buddy request accepted"}
 
 
+# User search for Study Buddies
+@router.get("/users/search")
+async def search_users(
+    q: str,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Search users by username or email (for finding study buddies)"""
+    if not q or len(q.strip()) < 2:
+        return []
+    search = q.strip().lower()
+    pattern = f"%{search}%"
+    users = db.query(User).filter(
+        User.id != current_user.id,
+        or_(
+            func.lower(User.username).like(pattern),
+            func.lower(User.email).like(pattern)
+        )
+    ).limit(limit).all()
+    # Exclude users who are already buddies (either direction)
+    existing = db.query(StudyBuddy).filter(
+        or_(
+            StudyBuddy.user_id == current_user.id,
+            StudyBuddy.buddy_id == current_user.id
+        )
+    ).all()
+    buddy_ids = set()
+    for sb in existing:
+        buddy_ids.add(sb.buddy_id if sb.user_id == current_user.id else sb.user_id)
+    buddy_ids.add(current_user.id)
+    return [
+        {"id": u.id, "username": u.username, "email": u.email}
+        for u in users if u.id not in buddy_ids
+    ]
+
+
 # Collaborative Sessions Endpoints
 @router.post("/collaborative-sessions", response_model=CollaborativeSessionResponse)
 async def create_collaborative_session(
@@ -190,33 +227,38 @@ async def create_collaborative_session(
     db: Session = Depends(get_db)
 ):
     """Create a new collaborative study session"""
-    session = CollaborativeSession(
-        host_id=current_user.id,
-        name=session_data.name,
-        description=session_data.description,
-        topic_id=session_data.topic_id,
-        max_participants=session_data.max_participants
-    )
-    db.add(session)
-    
-    # Add host as participant
-    participant = CollaborativeSessionParticipant(
-        session_id=session.id,
-        user_id=current_user.id
-    )
-    db.add(participant)
-    db.commit()
-    db.refresh(session)
-    
-    return {
-        "id": session.id,
-        "name": session.name,
-        "description": session.description,
-        "host_username": current_user.username,
-        "participant_count": 1,
-        "max_participants": session.max_participants,
-        "is_active": session.is_active
-    }
+    try:
+        session = CollaborativeSession(
+            host_id=current_user.id,
+            name=session_data.name,
+            description=session_data.description,
+            topic_id=session_data.topic_id,
+            max_participants=session_data.max_participants
+        )
+        db.add(session)
+        db.flush()  # Get session.id before adding participant
+        
+        # Add host as participant
+        participant = CollaborativeSessionParticipant(
+            session_id=session.id,
+            user_id=current_user.id
+        )
+        db.add(participant)
+        db.commit()
+        db.refresh(session)
+        
+        return {
+            "id": session.id,
+            "name": session.name,
+            "description": session.description,
+            "host_username": current_user.username,
+            "participant_count": 1,
+            "max_participants": session.max_participants,
+            "is_active": session.is_active
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/collaborative-sessions", response_model=List[CollaborativeSessionResponse])
