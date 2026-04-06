@@ -73,9 +73,12 @@ app = FastAPI(
 )
 
 # CORS middleware
+# Flutter web uses a random port (e.g. localhost:61744); allow_origins alone cannot list them all.
+_local_origin_regex = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS if o.strip()],
+    allow_origin_regex=_local_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

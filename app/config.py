@@ -80,11 +80,15 @@ class Settings(BaseSettings):
     # 90 days default; set JWT_EXPIRATION_DAYS or JWT_EXPIRATION_HOURS (legacy) to override
     JWT_EXPIRATION_DAYS: int = int(os.getenv("JWT_EXPIRATION_DAYS", "90"))
     
-    # CORS
-    CORS_ORIGINS: List[str] = os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:8080,http://localhost:8000"
-    ).split(",")
+    # CORS (exact origins; Flutter web dev uses random ports — see allow_origin_regex in main.py)
+    CORS_ORIGINS: List[str] = [
+        x.strip()
+        for x in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://localhost:8080,http://localhost:8000",
+        ).split(",")
+        if x.strip()
+    ]
     
     # Upload settings
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
