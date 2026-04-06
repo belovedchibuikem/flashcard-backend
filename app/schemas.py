@@ -28,6 +28,15 @@ class UserResponse(UserBase):
         from_attributes = True
 
 
+class UserUpdate(BaseModel):
+    """Partial profile update. Password change requires current_password when new_password is set."""
+
+    full_name: Optional[str] = None
+    username: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
 # Auth Schemas
 class Token(BaseModel):
     access_token: str

@@ -56,7 +56,7 @@ async def generate_flashcards(
             ai_card.get('type', 'concept')
         )
         
-        # Create visual aid (placeholder - would generate actual image)
+        # Visual aid: DALL·E when OPENAI_API_KEY is set, else placeholder image URL
         visual_aid_url = await visual_aid_service.generate_visual_aid(
             ai_card.get('question', ''),
             visual_description

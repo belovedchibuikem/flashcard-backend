@@ -14,7 +14,7 @@ from passlib.context import CryptContext
 import bcrypt
 from app.database import get_db
 from app.models import User
-from app.schemas import UserCreate, UserResponse, Token, LoginRequest
+from app.schemas import UserCreate, UserResponse, UserUpdate, Token, LoginRequest
 from app.config import settings
 
 router = APIRouter()
@@ -267,6 +267,65 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current user information"""
     return current_user
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_current_user(
+    body: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update profile (display name, username, and optionally password)."""
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "full_name" in updates:
+        fn = updates["full_name"]
+        current_user.full_name = (fn or "").strip() or None
+
+    if "username" in updates:
+        uname = (updates["username"] or "").strip()
+        if len(uname) < 3:
+            raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+        taken = (
+            db.query(User)
+            .filter(User.username == uname, User.id != current_user.id)
+            .first()
+        )
+        if taken:
+            raise HTTPException(status_code=400, detail="Username already taken")
+        current_user.username = uname
+
+    new_pw = updates.get("new_password")
+    if new_pw is not None and str(new_pw).strip():
+        pwd = str(new_pw).strip()
+        if len(pwd) < 6:
+            raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+        cur = updates.get("current_password") or ""
+        if not cur:
+            raise HTTPException(
+                status_code=400,
+                detail="Current password is required to change password",
+            )
+        if not verify_password(cur, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        current_user.password_hash = get_password_hash(pwd)
+
+    try:
+        db.add(current_user)
+        db.commit()
+        db.refresh(current_user)
+        only_password = set(updates.keys()) <= {"new_password", "current_password"}
+        logger.info("User %s updated profile%s", current_user.id, " (password)" if only_password else "")
+        return current_user
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error("Profile update failed: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database temporarily unavailable. Please try again.",
+        )
 
 
 @router.get("/verify-token")
