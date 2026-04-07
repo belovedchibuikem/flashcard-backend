@@ -47,8 +47,11 @@ async def generate_flashcards(
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
     
-    if not material.extracted_text:
-        raise HTTPException(status_code=400, detail="Material not processed yet")
+    if not (material.extracted_text or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Material has no extractable text yet. For PDFs wait for processing; for scanned PDFs/images ensure OCR APIs are configured.",
+        )
     
     # Generate flashcards using AI
     ai_flashcards = await ai_service.generate_flashcards(material.extracted_text, count)
@@ -63,14 +66,14 @@ async def generate_flashcards(
                     "then redeploy so the serverless function receives them."
                 ),
             )
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "AI returned no flashcards. Check that API keys are valid, billing is enabled, "
-                "and optional env OPENAI_MODEL / GOOGLE_GEMINI_MODEL match your account. "
-                "Inspect Vercel function logs for provider error details."
-            ),
+        hint = getattr(ai_service, "_last_flashcard_error", None) or ""
+        msg = (
+            "AI returned no flashcards. Check API keys, billing, and OPENAI_MODEL / GOOGLE_GEMINI_MODEL. "
+            "See Vercel function logs for details."
         )
+        if hint:
+            msg = f"{msg} Provider: {hint}"
+        raise HTTPException(status_code=502, detail=msg)
     
     created_flashcards = []
     for ai_card in ai_flashcards:

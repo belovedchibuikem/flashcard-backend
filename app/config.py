@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     
     # OpenAI (filled from env / .env via BaseSettings; _sync_ai_keys_from_process_environ reinforces on Vercel)
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    OPENAI_MODEL: str = "gpt-4o-mini"
     
     # Anthropic Claude (for long documents)
     ANTHROPIC_API_KEY: str = ""

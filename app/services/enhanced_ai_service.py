@@ -3,10 +3,116 @@ Enhanced AI Service with Latest Models for Better Accuracy
 Supports GPT-4 Turbo, Claude 3.5 Sonnet, and Gemini 2.5 Flash-Lite
 """
 
+import json
+import logging
 import os
 import openai
 from typing import List, Dict, Any, Optional
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _strip_json_fences(raw: str) -> str:
+    t = (raw or "").strip()
+    if not t.startswith("```"):
+        return t
+    lines = t.split("\n")
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _find_json_object_in_text(text: str) -> Optional[str]:
+    """If the model adds prose around JSON, pull the first {...} span."""
+    t = _strip_json_fences(text)
+    start = t.find("{")
+    depth = 0
+    for i, ch in enumerate(t[start:], start=start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return t[start : i + 1]
+    return None
+
+
+def _normalize_flashcard_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Map common LLM key variants to question/answer expected by the API."""
+    q = d.get("question") or d.get("Question") or d.get("q") or d.get("Q")
+    a = d.get("answer") or d.get("Answer") or d.get("a") or d.get("A")
+    out = dict(d)
+    out["question"] = (str(q).strip() if q is not None else "")
+    out["answer"] = (str(a).strip() if a is not None else "")
+    return out
+
+
+def _normalize_flashcard_list(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [_normalize_flashcard_dict(x) for x in items if isinstance(x, dict)]
+
+
+def _flashcard_list_from_parsed(result: Any) -> List[Dict[str, Any]]:
+    """Normalize LLM output to a list of flashcard dicts (tolerant of key names and nesting)."""
+    if isinstance(result, list):
+        return [x for x in result if isinstance(x, dict)]
+    if isinstance(result, dict):
+        for key in (
+            "flashcards",
+            "flash_cards",
+            "cards",
+            "data",
+            "items",
+            "results",
+        ):
+            v = result.get(key)
+            if isinstance(v, list):
+                found = [x for x in v if isinstance(x, dict)]
+                if found:
+                    return found
+        if len(result) == 1:
+            v = next(iter(result.values()))
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+            if isinstance(v, dict):
+                inner = _flashcard_list_from_parsed(v)
+                if inner:
+                    return inner
+        for v in result.values():
+            if isinstance(v, dict):
+                inner = _flashcard_list_from_parsed(v)
+                if inner:
+                    return inner
+    return []
+
+
+def _parse_llm_json(content: str) -> Any:
+    """Parse JSON from chat response; tolerate markdown and extra wrapping text."""
+    t = _strip_json_fences(content)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        blob = _find_json_object_in_text(t)
+        if blob:
+            return json.loads(blob)
+        raise
+
+
+def _gemini_aggregate_text(response: Any) -> str:
+    try:
+        return (response.text or "").strip()
+    except Exception:
+        pass
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return ""
+        parts = getattr(candidates[0].content, "parts", None) or []
+        return "".join(getattr(p, "text", "") or "" for p in parts).strip()
+    except Exception:
+        return ""
 
 
 def _effective_api_key(val: str) -> str:
@@ -50,7 +156,7 @@ class EnhancedAIService:
             os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "") or ""
         )
         self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
-        self.openai_model = getattr(settings, "OPENAI_MODEL", "gpt-4-turbo-preview")
+        self.openai_model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
 
         anthropic_key = _effective_api_key(
             os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "") or ""
@@ -72,6 +178,8 @@ class EnhancedAIService:
             self.gemini_model = genai.GenerativeModel(gemini_model)
         else:
             self.gemini_model = None
+
+        self._last_flashcard_error: Optional[str] = None
 
     def has_any_llm(self) -> bool:
         return bool(self.openai_client or self.gemini_model)
@@ -169,19 +277,50 @@ class EnhancedAIService:
         use_fast_model: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        Generate flashcards with model selection
-        Uses Gemini Flash-Lite for fast generation, GPT-4 Turbo for quality
+        Generate flashcards with model selection.
+        Tries primary provider then falls back so a bad OpenAI parse/model does not block Gemini (and vice versa).
         """
-        if use_fast_model and self.gemini_model:
+        self._last_flashcard_error = None
+        if not (text or "").strip():
+            self._last_flashcard_error = "No text extracted from material to generate from."
+            return []
+
+        async def try_gemini() -> List[Dict[str, Any]]:
+            if not self.gemini_model:
+                return []
             return await self._generate_flashcards_with_gemini(text, count)
-        if self.openai_client:
+
+        async def try_openai() -> List[Dict[str, Any]]:
+            if not self.openai_client:
+                return []
             return await self._generate_flashcards_with_openai(text, count)
-        if self.gemini_model:
-            return await self._generate_flashcards_with_gemini(text, count)
+
+        if use_fast_model:
+            order = (try_gemini, try_openai)
+        else:
+            order = (try_openai, try_gemini)
+
+        errors: List[str] = []
+        for attempt in order:
+            out = await attempt()
+            if out:
+                norm = _normalize_flashcard_list(out)
+                # Drop entries with no text at all (prevents "success" with blank cards)
+                norm = [c for c in norm if c.get("question") or c.get("answer")]
+                if norm:
+                    return norm
+                self._last_flashcard_error = (
+                    (self._last_flashcard_error or "")
+                    + " | All flashcard objects missing question/answer text"
+                ).strip(" |")
+            if self._last_flashcard_error:
+                errors.append(self._last_flashcard_error)
+        if errors:
+            self._last_flashcard_error = " | ".join(errors)[:500]
         return []
     
     async def _generate_flashcards_with_openai(self, text: str, count: int) -> List[Dict[str, Any]]:
-        """Generate flashcards using GPT-4 Turbo"""
+        """Generate flashcards using OpenAI chat completions (json_object)."""
         if not self.openai_client:
             return []
         prompt = f"""
@@ -202,25 +341,56 @@ class EnhancedAIService:
         You MUST return a single JSON object with exactly one top-level key, "flashcards",
         whose value is the array of flashcard objects. No other top-level keys. No markdown.
         """
-        
-        try:
-            response = self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=[
-                    {"role": "system", "content": "You are an expert at creating educational flashcards that help students learn effectively."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=3000,
-                response_format={"type": "json_object"}
-            )
-            
-            import json
-            result = json.loads(response.choices[0].message.content)
-            return result.get('flashcards', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
-        except Exception as e:
-            print(f"Error generating flashcards with OpenAI: {e}")
-            return []
+
+        configured = self.openai_model
+        fallbacks = []
+        for m in ("gpt-4o-mini", "gpt-4o", "gpt-4-turbo"):
+            if m != configured and m not in fallbacks:
+                fallbacks.append(m)
+        models_to_try = [configured] + fallbacks
+
+        last_err: Optional[Exception] = None
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an expert at creating educational flashcards that help students learn effectively.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        for model in models_to_try:
+            for use_json_object in (True, False):
+                try:
+                    kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=4096,
+                    )
+                    if use_json_object:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    response = self.openai_client.chat.completions.create(**kwargs)
+                    content = response.choices[0].message.content
+                    if not content:
+                        raise ValueError("empty completion content")
+                    result = _parse_llm_json(content)
+                    cards = _flashcard_list_from_parsed(result)
+                    if cards:
+                        return cards
+                    last_err = ValueError(
+                        f"OpenAI model {model} (json_object={use_json_object}) returned no flashcard objects"
+                    )
+                except Exception as e:
+                    last_err = e
+                    logger.warning(
+                        "OpenAI flashcards failed model=%s json_object=%s: %s",
+                        model,
+                        use_json_object,
+                        e,
+                        exc_info=False,
+                    )
+
+        self._last_flashcard_error = f"OpenAI: {last_err}"[:400] if last_err else "OpenAI: unknown error"
+        return []
     
     async def _generate_flashcards_with_gemini(self, text: str, count: int) -> List[Dict[str, Any]]:
         """Generate flashcards using Google Gemini (fast, cost-efficient)"""
@@ -243,26 +413,34 @@ class EnhancedAIService:
         """
         
         try:
-            response = self.gemini_model.generate_content(prompt)
-            import json
-            raw = (response.text or "").strip()
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                if lines and lines[0].strip().startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                raw = "\n".join(lines).strip()
-            result = json.loads(raw)
-            if isinstance(result, list):
-                return result
-            if isinstance(result, dict):
-                flashcards = result.get("flashcards")
-                if isinstance(flashcards, list):
-                    return flashcards
+            gen_cfg = None
+            try:
+                gen_cfg = genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=8192,
+                    response_mime_type="application/json",
+                )
+            except Exception:
+                pass
+            response = (
+                self.gemini_model.generate_content(prompt, generation_config=gen_cfg)
+                if gen_cfg
+                else self.gemini_model.generate_content(prompt)
+            )
+            raw = _gemini_aggregate_text(response)
+            if not raw:
+                block = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+                self._last_flashcard_error = f"Gemini: empty response (block_reason={block})"[:400]
+                return []
+            result = _parse_llm_json(raw)
+            cards = _flashcard_list_from_parsed(result)
+            if cards:
+                return cards
+            self._last_flashcard_error = "Gemini: parsed JSON but no flashcard list found"
             return []
         except Exception as e:
-            print(f"Error generating flashcards with Gemini: {e}")
+            logger.warning("Gemini flashcards failed: %s", e, exc_info=True)
+            self._last_flashcard_error = f"Gemini: {e}"[:400]
             return []
     
     async def generate_practice_questions(
