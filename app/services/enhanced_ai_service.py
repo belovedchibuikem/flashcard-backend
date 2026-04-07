@@ -12,6 +12,27 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# IDs that often return model_not_found today → map to broadly-available chat models.
+_OPENAI_MODEL_FIXUPS: Dict[str, str] = {
+    "gpt-4-turbo": "gpt-4o-mini",
+    "gpt-4-turbo-preview": "gpt-4o-mini",
+}
+
+
+def _fixup_openai_chat_model(model_id: str) -> str:
+    m = (model_id or "").strip()
+    return _OPENAI_MODEL_FIXUPS.get(m, m)
+
+
+def _openai_models_to_try(configured: str) -> List[str]:
+    """Configured (after fixup), then stable fallbacks — never use invalid gpt-4-turbo slug."""
+    primary = _fixup_openai_chat_model(configured)
+    out: List[str] = []
+    for m in (primary, "gpt-4o-mini", "gpt-4o"):
+        if m and m not in out:
+            out.append(m)
+    return out
+
 
 def _strip_json_fences(raw: str) -> str:
     t = (raw or "").strip()
@@ -156,7 +177,9 @@ class EnhancedAIService:
             os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "") or ""
         )
         self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
-        self.openai_model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+        self.openai_model = _fixup_openai_chat_model(
+            getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+        )
 
         anthropic_key = _effective_api_key(
             os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "") or ""
@@ -342,12 +365,7 @@ class EnhancedAIService:
         whose value is the array of flashcard objects. No other top-level keys. No markdown.
         """
 
-        configured = self.openai_model
-        fallbacks = []
-        for m in ("gpt-4o-mini", "gpt-4o", "gpt-4-turbo"):
-            if m != configured and m not in fallbacks:
-                fallbacks.append(m)
-        models_to_try = [configured] + fallbacks
+        models_to_try = _openai_models_to_try(self.openai_model)
 
         last_err: Optional[Exception] = None
         messages = [
