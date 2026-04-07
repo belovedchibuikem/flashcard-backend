@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
+import mimetypes
 from datetime import datetime
 from app.database import get_db
 from app.models import User, StudyMaterial, ProcessingStatus, FileType
@@ -19,6 +20,72 @@ from app.config import settings
 router = APIRouter()
 ocr_service = SimpleOCRService()
 ai_service = EnhancedAIService()
+
+# Mobile/web clients often send application/octet-stream or omit MIME; validate with sniff + filename.
+ALLOWED_MATERIAL_TYPES = frozenset({
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+})
+
+
+def _normalize_mime(mime: Optional[str]) -> Optional[str]:
+    if not mime:
+        return None
+    m = mime.split(";")[0].strip().lower()
+    if m == "image/jpg":
+        return "image/jpeg"
+    return m
+
+
+def _sniff_bytes_mime(content: bytes) -> Optional[str]:
+    if len(content) >= 4 and content[:4] == b"%PDF":
+        return "application/pdf"
+    if len(content) >= 3 and content[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(content) >= 8 and content[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(content) >= 6 and content[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _guess_mime_from_filename(filename: str) -> Optional[str]:
+    if not filename:
+        return None
+    guessed, _ = mimetypes.guess_type(filename)
+    return _normalize_mime(guessed)
+
+
+def resolve_study_material_mime(
+    declared: Optional[str],
+    content: bytes,
+    filename: str,
+) -> Optional[str]:
+    """Pick a trusted MIME type for study materials (PDF + images)."""
+    declared_n = _normalize_mime(declared)
+    if declared_n in ALLOWED_MATERIAL_TYPES:
+        return declared_n
+
+    sniffed = _sniff_bytes_mime(content)
+    if sniffed in ALLOWED_MATERIAL_TYPES:
+        return sniffed
+
+    guessed = _guess_mime_from_filename(filename)
+    if guessed in ALLOWED_MATERIAL_TYPES:
+        return guessed
+
+    if declared_n in (None, "", "application/octet-stream", "binary/octet-stream"):
+        if sniffed and sniffed in ALLOWED_MATERIAL_TYPES:
+            return sniffed
+        if guessed and guessed in ALLOWED_MATERIAL_TYPES:
+            return guessed
+
+    return None
 
 
 def save_uploaded_file(file: UploadFile, user_id: int) -> tuple[str, str]:
@@ -58,19 +125,22 @@ async def upload_material(
     
     # Reset file pointer
     await file.seek(0)
-    
-    # Validate file type
-    allowed_types = ["application/pdf", "image/jpeg", "image/png", "image/jpg", "image/gif", "image/webp"]
-    if file.content_type not in allowed_types:
+
+    effective_mime = resolve_study_material_mime(
+        file.content_type,
+        file_content,
+        file.filename or "",
+    )
+    if not effective_mime:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not supported. Allowed types: PDF, JPEG, PNG, GIF, WEBP"
+            detail="File type not supported. Allowed types: PDF, JPEG, PNG, GIF, WEBP",
         )
-    
+
     file_type = None
-    if file.content_type == "application/pdf":
+    if effective_mime == "application/pdf":
         file_type = FileType.PDF
-    elif file.content_type and file.content_type.startswith("image/"):
+    elif effective_mime.startswith("image/"):
         file_type = FileType.IMAGE
     else:
         file_type = FileType.DOCUMENT
