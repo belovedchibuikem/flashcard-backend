@@ -20,6 +20,17 @@ spaced_repetition_service = SpacedRepetitionService()
 visual_aid_service = VisualAidService()
 
 
+def _coerce_tags(raw) -> list:
+    """LLMs sometimes return tags as dict or non-list; DB/JSON expects list of strings."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    if isinstance(raw, dict):
+        return []
+    return []
+
+
 @router.post("/generate/{material_id}", response_model=List[FlashcardResponse])
 async def generate_flashcards(
     material_id: int,
@@ -72,7 +83,7 @@ async def generate_flashcards(
             visual_aid_url=visual_aid_url,
             mnemonic_device=ai_card.get('mnemonic', ''),
             importance_score=ai_card.get('importance_score', 5),
-            tags=ai_card.get('tags', [])
+            tags=_coerce_tags(ai_card.get('tags')),
         )
         db.add(flashcard)
         db.flush()

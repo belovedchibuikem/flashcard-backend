@@ -220,7 +220,13 @@ class EnhancedAIService:
             response = self.gemini_model.generate_content(prompt)
             import json
             result = json.loads(response.text)
-            return result if isinstance(result, list) else []
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict):
+                flashcards = result.get("flashcards")
+                if isinstance(flashcards, list):
+                    return flashcards
+            return []
         except Exception as e:
             print(f"Error generating flashcards with Gemini: {e}")
             return []
