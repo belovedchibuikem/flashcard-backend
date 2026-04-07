@@ -2,7 +2,7 @@
 Application configuration settings
 """
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 import os
 import logging
@@ -42,7 +42,32 @@ def _get_jwt_secret() -> str:
     )
 
 
+def _sync_ai_keys_from_process_environ(s: "Settings") -> None:
+    """
+    Vercel injects secrets into the process environment at runtime.
+    Reinforce AI keys from os.environ so they are never shadowed by .env placeholders.
+    """
+    oa = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if oa:
+        s.OPENAI_API_KEY = oa
+    gm = (
+        os.getenv("GOOGLE_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or ""
+    ).strip()
+    if gm:
+        s.GOOGLE_GEMINI_API_KEY = gm
+    an = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if an:
+        s.ANTHROPIC_API_KEY = an
+
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(_backend_dir / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     # Database
     # Support both standard DATABASE_URL and Vercel Neon integration variables
     # Priority: Check Neon integration variables FIRST (they're more reliable)
@@ -54,15 +79,16 @@ class Settings(BaseSettings):
         ""  # Empty default - must be set via environment variable
     )
     
-    # OpenAI
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")  # or "gpt-4o"
+    # OpenAI (filled from env / .env via BaseSettings; _sync_ai_keys_from_process_environ reinforces on Vercel)
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4-turbo-preview"
     
     # Anthropic Claude (for long documents)
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_API_KEY: str = ""
     
     # Google Gemini (for fast/cost-efficient tasks)
-    GOOGLE_GEMINI_API_KEY: str = os.getenv("GOOGLE_GEMINI_API_KEY", "")
+    GOOGLE_GEMINI_API_KEY: str = ""
+    GOOGLE_GEMINI_MODEL: str = "gemini-2.0-flash"
     
     # Google Cloud Vision
     GOOGLE_CLOUD_VISION_API_KEY: str = os.getenv("GOOGLE_CLOUD_VISION_API_KEY", "")
@@ -110,12 +136,10 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
     # On Vercel/Lambda, default to /tmp; override with UPLOAD_DIR for VPS/Docker. Docs: filesystem is ephemeral.
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR") or _default_upload_dir()
-    
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()
+_sync_ai_keys_from_process_environ(settings)
 
 # Validate DATABASE_URL and warn if it looks invalid
 if settings.DATABASE_URL:

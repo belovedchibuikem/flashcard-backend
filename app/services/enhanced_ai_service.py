@@ -3,9 +3,23 @@ Enhanced AI Service with Latest Models for Better Accuracy
 Supports GPT-4 Turbo, Claude 3.5 Sonnet, and Gemini 2.5 Flash-Lite
 """
 
+import os
 import openai
 from typing import List, Dict, Any, Optional
 from app.config import settings
+
+
+def _effective_api_key(val: str) -> str:
+    """Strip and reject template placeholder values from .env samples."""
+    v = (val or "").strip()
+    if not v:
+        return ""
+    lower = v.lower()
+    if lower in ("your_openai_api_key_here", "changeme", "none", "sk-your-key-here"):
+        return ""
+    if lower.startswith("your_") and "here" in lower:
+        return ""
+    return v
 
 # Claude (Anthropic)
 try:
@@ -31,25 +45,36 @@ class EnhancedAIService:
     """
     
     def __init__(self):
-        # OpenAI (GPT-4 Turbo/GPT-4o) - only init if key is set
-        openai_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        # Prefer process env (Vercel) then settings — avoids Pydantic/env_file edge cases
+        openai_key = _effective_api_key(
+            os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", "") or ""
+        )
         self.openai_client = openai.OpenAI(api_key=openai_key) if openai_key else None
-        self.openai_model = getattr(settings, 'OPENAI_MODEL', 'gpt-4-turbo-preview')  # or 'gpt-4o'
-        
-        # Claude (for long documents)
-        anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '') or ''
+        self.openai_model = getattr(settings, "OPENAI_MODEL", "gpt-4-turbo-preview")
+
+        anthropic_key = _effective_api_key(
+            os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", "") or ""
+        )
         if CLAUDE_AVAILABLE and anthropic_key:
             self.claude_client = anthropic.Anthropic(api_key=anthropic_key)
         else:
             self.claude_client = None
-        
-        # Gemini (for fast/cost-efficient tasks)
-        gemini_key = getattr(settings, 'GOOGLE_GEMINI_API_KEY', '') or ''
+
+        gemini_key = _effective_api_key(
+            os.getenv("GOOGLE_GEMINI_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or getattr(settings, "GOOGLE_GEMINI_API_KEY", "")
+            or ""
+        )
+        gemini_model = getattr(settings, "GOOGLE_GEMINI_MODEL", "gemini-2.0-flash")
         if GEMINI_AVAILABLE and gemini_key:
             genai.configure(api_key=gemini_key)
-            self.gemini_model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            self.gemini_model = genai.GenerativeModel(gemini_model)
         else:
             self.gemini_model = None
+
+    def has_any_llm(self) -> bool:
+        return bool(self.openai_client or self.gemini_model)
     
     async def extract_key_concepts(
         self, 
@@ -163,7 +188,7 @@ class EnhancedAIService:
         Generate {count} high-quality flashcards from the following study material.
         Create diverse flashcard types: definitions, concept explanations, problem-solving, and true/false.
         
-        For each flashcard, provide:
+        For each flashcard object in the "flashcards" array, include:
         - question: Clear, concise question
         - answer: Detailed, accurate answer
         - type: One of ['definition', 'concept', 'problem_solving', 'true_false']
@@ -174,7 +199,8 @@ class EnhancedAIService:
         Text:
         {text[:4000]}
         
-        Return JSON array with flashcards, no additional text.
+        You MUST return a single JSON object with exactly one top-level key, "flashcards",
+        whose value is the array of flashcard objects. No other top-level keys. No markdown.
         """
         
         try:
@@ -197,12 +223,12 @@ class EnhancedAIService:
             return []
     
     async def _generate_flashcards_with_gemini(self, text: str, count: int) -> List[Dict[str, Any]]:
-        """Generate flashcards using Gemini 2.5 Flash-Lite (faster, cost-efficient)"""
+        """Generate flashcards using Google Gemini (fast, cost-efficient)"""
         prompt = f"""
         Generate {count} high-quality flashcards from the following study material.
         Create diverse flashcard types: definitions, concept explanations, problem-solving, and true/false.
         
-        For each flashcard, provide:
+        For each flashcard object in the "flashcards" array, include:
         - question: Clear, concise question
         - answer: Detailed, accurate answer
         - type: One of ['definition', 'concept', 'problem_solving', 'true_false']
@@ -213,13 +239,21 @@ class EnhancedAIService:
         Text:
         {text[:4000]}
         
-        Return JSON array with flashcards, no additional text.
+        Return valid JSON only: a single object {{"flashcards": [ ... ]}} with no markdown fences.
         """
         
         try:
             response = self.gemini_model.generate_content(prompt)
             import json
-            result = json.loads(response.text)
+            raw = (response.text or "").strip()
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                if lines and lines[0].strip().startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                raw = "\n".join(lines).strip()
+            result = json.loads(raw)
             if isinstance(result, list):
                 return result
             if isinstance(result, dict):

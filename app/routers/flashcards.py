@@ -54,9 +54,22 @@ async def generate_flashcards(
     ai_flashcards = await ai_service.generate_flashcards(material.extracted_text, count)
     
     if not ai_flashcards:
+        if not ai_service.has_any_llm():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "AI flashcard generation is not configured. "
+                    "Add OPENAI_API_KEY or GOOGLE_GEMINI_API_KEY in Vercel → Settings → Environment Variables, "
+                    "then redeploy so the serverless function receives them."
+                ),
+            )
         raise HTTPException(
-            status_code=503,
-            detail="AI flashcard generation is not available. Please set OPENAI_API_KEY or GOOGLE_GEMINI_API_KEY in your environment."
+            status_code=502,
+            detail=(
+                "AI returned no flashcards. Check that API keys are valid, billing is enabled, "
+                "and optional env OPENAI_MODEL / GOOGLE_GEMINI_MODEL match your account. "
+                "Inspect Vercel function logs for provider error details."
+            ),
         )
     
     created_flashcards = []
