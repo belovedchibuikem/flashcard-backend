@@ -47,6 +47,11 @@ class MasteryLevel(str, enum.Enum):
     MASTERED = "mastered"
 
 
+def _enum_type(enum_class):
+    """PostgreSQL ENUM columns expect string values (e.g. 'pdf'); SQLAlchemy otherwise may send names ('PDF')."""
+    return Enum(enum_class, values_callable=lambda obj: [m.value for m in obj])
+
+
 class User(Base):
     __tablename__ = "users"
     
@@ -77,13 +82,13 @@ class StudyMaterial(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(255), nullable=False)
-    file_type = Column(Enum(FileType), nullable=False)
+    file_type = Column(_enum_type(FileType), nullable=False)
     file_url = Column(String(500), nullable=False)
     file_size = Column(BIGINT)
     original_filename = Column(String(255))
     extracted_text = Column(Text)
     ocr_processed = Column(Boolean, default=False)
-    processing_status = Column(Enum(ProcessingStatus), default=ProcessingStatus.PENDING)
+    processing_status = Column(_enum_type(ProcessingStatus), default=ProcessingStatus.PENDING)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -97,8 +102,8 @@ class Flashcard(Base):
     study_material_id = Column(Integer, ForeignKey("study_materials.id"), nullable=True)
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
-    flashcard_type = Column(Enum(FlashcardType), default=FlashcardType.CONCEPT)
-    difficulty_level = Column(Enum(DifficultyLevel), default=DifficultyLevel.MEDIUM)
+    flashcard_type = Column(_enum_type(FlashcardType), default=FlashcardType.CONCEPT)
+    difficulty_level = Column(_enum_type(DifficultyLevel), default=DifficultyLevel.MEDIUM)
     visual_aid_url = Column(String(500))
     mnemonic_device = Column(Text)
     tags = Column(JSON)
@@ -128,7 +133,7 @@ class SpacedRepetition(Base):
     repetitions = Column(Integer, default=0)
     last_reviewed_at = Column(DateTime, nullable=True)
     next_review_at = Column(DateTime, nullable=True)
-    mastery_level = Column(Enum(MasteryLevel), default=MasteryLevel.LEARNING)
+    mastery_level = Column(_enum_type(MasteryLevel), default=MasteryLevel.LEARNING)
     consecutive_correct = Column(Integer, default=0)
     consecutive_incorrect = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
@@ -175,7 +180,7 @@ class PracticeQuestion(Base):
     correct_answer = Column(Text, nullable=False)
     options = Column(JSON)
     explanation = Column(Text)
-    difficulty_level = Column(Enum(DifficultyLevel), default=DifficultyLevel.MEDIUM)
+    difficulty_level = Column(_enum_type(DifficultyLevel), default=DifficultyLevel.MEDIUM)
     predicted_exam_relevance = Column(DECIMAL(3, 2), default=0.5)
     created_at = Column(DateTime, server_default=func.now())
 
