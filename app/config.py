@@ -17,6 +17,22 @@ load_dotenv(_backend_dir.parent / ".env")  # project root
 logger = logging.getLogger(__name__)
 
 
+def _is_serverless_ephemeral_filesystem() -> bool:
+    """Vercel/AWS Lambda deploy the app under /var/task, which is read-only; only /tmp is writable."""
+    return (
+        os.getenv("VERCEL") == "1"
+        or bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+        or str(os.getenv("AWS_EXECUTION_ENV", "")).startswith("AWS_Lambda")
+    )
+
+
+def _default_upload_dir() -> str:
+    if _is_serverless_ephemeral_filesystem():
+        base = os.getenv("TMPDIR") or "/tmp"
+        return os.path.join(base, "flashcard_uploads")
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+
+
 def _get_jwt_secret() -> str:
     """Read JWT secret from env - check multiple var names for Vercel compatibility."""
     return (
@@ -92,7 +108,8 @@ class Settings(BaseSettings):
     
     # Upload settings
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
-    UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+    # On Vercel/Lambda, default to /tmp; override with UPLOAD_DIR for VPS/Docker. Docs: filesystem is ephemeral.
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR") or _default_upload_dir()
     
     class Config:
         env_file = ".env"
