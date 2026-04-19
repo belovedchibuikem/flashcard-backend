@@ -35,10 +35,16 @@ def _coerce_tags(raw) -> list:
 async def generate_flashcards(
     material_id: int,
     count: int = 10,
+    enrich_visuals: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Generate flashcards from study material using AI"""
+    """
+    Generate flashcards from study material using AI.
+
+    enrich_visuals: When True, runs extra OpenAI calls per card (description + DALL·E).
+    Default False — fast, cheap, fits serverless timeouts; set True only if you need images.
+    """
     material = db.query(StudyMaterial).filter(
         StudyMaterial.id == material_id,
         StudyMaterial.user_id == current_user.id
@@ -77,18 +83,17 @@ async def generate_flashcards(
     
     created_flashcards = []
     for ai_card in ai_flashcards:
-        # Generate visual aid description
-        visual_description = await ai_service.generate_visual_description(
-            ai_card.get('question', ''),
-            ai_card.get('type', 'concept')
-        )
-        
-        # Visual aid: DALL·E when OPENAI_API_KEY is set, else placeholder image URL
-        visual_aid_url = await visual_aid_service.generate_visual_aid(
-            ai_card.get('question', ''),
-            visual_description
-        )
-        
+        visual_aid_url = None
+        if enrich_visuals:
+            visual_description = await ai_service.generate_visual_description(
+                ai_card.get('question', ''),
+                ai_card.get('type', 'concept')
+            )
+            visual_aid_url = await visual_aid_service.generate_visual_aid(
+                ai_card.get('question', ''),
+                visual_description
+            )
+
         flashcard = Flashcard(
             user_id=current_user.id,
             study_material_id=material_id,
