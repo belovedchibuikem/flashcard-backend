@@ -3,12 +3,22 @@ Flashcards router
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from app.database import get_db
-from app.models import User, Flashcard, StudyMaterial, SpacedRepetition, ReviewSession, ReviewResponse
-from app.schemas import FlashcardCreate, FlashcardResponse, ReviewSessionCreate, ReviewSessionResponse
+from app.models import User, Flashcard, StudyMaterial, Topic, SpacedRepetition, ReviewSession, ReviewResponse
+from app.schemas import (
+    FlashcardCreate,
+    FlashcardResponse,
+    FlashcardListItem,
+    FlashcardDecksSummaryResponse,
+    FlashcardMaterialDeckSummary,
+    FlashcardTopicDeckSummary,
+    ReviewSessionCreate,
+    ReviewSessionResponse,
+)
 from app.routers.auth import get_current_user
 from app.services.enhanced_ai_service import EnhancedAIService
 from app.services.spaced_repetition import SpacedRepetitionService
@@ -18,6 +28,55 @@ router = APIRouter()
 ai_service = EnhancedAIService()
 spaced_repetition_service = SpacedRepetitionService()
 visual_aid_service = VisualAidService()
+
+
+def _flashcard_list_query(db: Session, user_id: int):
+    """Base query: flashcard + optional study material title + topic name (same user)."""
+    return (
+        db.query(Flashcard, StudyMaterial.title, Topic.name)
+        .outerjoin(
+            StudyMaterial,
+            and_(
+                Flashcard.study_material_id == StudyMaterial.id,
+                StudyMaterial.user_id == user_id,
+            ),
+        )
+        .outerjoin(
+            Topic,
+            and_(
+                Flashcard.topic_id == Topic.id,
+                Topic.user_id == user_id,
+            ),
+        )
+        .filter(Flashcard.user_id == user_id)
+    )
+
+
+def _apply_deck_filters(
+    q,
+    *,
+    study_material_id: Optional[int] = None,
+    uncategorized: bool = False,
+    topic_id: Optional[int] = None,
+):
+    if uncategorized:
+        q = q.filter(Flashcard.study_material_id.is_(None))
+    elif study_material_id is not None:
+        q = q.filter(Flashcard.study_material_id == study_material_id)
+    if topic_id is not None:
+        q = q.filter(Flashcard.topic_id == topic_id)
+    return q
+
+
+def _rows_to_list_items(rows: List[Tuple]) -> List[FlashcardListItem]:
+    out: List[FlashcardListItem] = []
+    for row in rows:
+        card, mat_title, topic_name = row[0], row[1], row[2]
+        data = FlashcardResponse.model_validate(card).model_dump()
+        data["study_material_title"] = mat_title
+        data["topic_name"] = topic_name
+        out.append(FlashcardListItem(**data))
+    return out
 
 
 def _coerce_tags(raw) -> list:
@@ -155,54 +214,141 @@ async def create_flashcard(
     return flashcard
 
 
-@router.get("/", response_model=List[FlashcardResponse])
+@router.get("/decks/summary", response_model=FlashcardDecksSummaryResponse)
+async def get_flashcard_decks_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Deck/course picker: counts per uploaded material (e.g. PDF) and per topic."""
+    mat_rows = (
+        db.query(
+            StudyMaterial.id,
+            StudyMaterial.title,
+            StudyMaterial.file_type,
+            func.count(Flashcard.id).label("cnt"),
+        )
+        .join(Flashcard, Flashcard.study_material_id == StudyMaterial.id)
+        .filter(StudyMaterial.user_id == current_user.id)
+        .group_by(StudyMaterial.id, StudyMaterial.title, StudyMaterial.file_type)
+        .order_by(StudyMaterial.title.asc())
+        .all()
+    )
+    topic_rows = (
+        db.query(
+            Topic.id,
+            Topic.name,
+            Topic.color_code,
+            func.count(Flashcard.id).label("cnt"),
+        )
+        .join(Flashcard, Flashcard.topic_id == Topic.id)
+        .filter(Topic.user_id == current_user.id)
+        .group_by(Topic.id, Topic.name, Topic.color_code)
+        .order_by(Topic.name.asc())
+        .all()
+    )
+    uncategorized_count = (
+        db.query(func.count(Flashcard.id))
+        .filter(
+            Flashcard.user_id == current_user.id,
+            Flashcard.study_material_id.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+    return FlashcardDecksSummaryResponse(
+        by_material=[
+            FlashcardMaterialDeckSummary(
+                id=r[0],
+                title=r[1],
+                file_type=str(r[2]),
+                flashcard_count=int(r[3]),
+            )
+            for r in mat_rows
+        ],
+        by_topic=[
+            FlashcardTopicDeckSummary(
+                id=r[0],
+                name=r[1],
+                color_code=r[2],
+                flashcard_count=int(r[3]),
+            )
+            for r in topic_rows
+        ],
+        uncategorized_count=int(uncategorized_count),
+    )
+
+
+@router.get("/", response_model=List[FlashcardListItem])
 async def get_flashcards(
     topic_id: Optional[int] = None,
+    study_material_id: Optional[int] = None,
+    uncategorized: bool = False,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Get all flashcards for current user"""
-    query = db.query(Flashcard).filter(Flashcard.user_id == current_user.id)
-    
-    if topic_id:
-        query = query.filter(Flashcard.topic_id == topic_id)
-    
-    flashcards = query.all()
-    return flashcards
+    """Get flashcards; filter by topic and/or source material (course deck) or uncategorized only."""
+    q = _flashcard_list_query(db, current_user.id)
+    q = _apply_deck_filters(
+        q,
+        study_material_id=study_material_id,
+        uncategorized=uncategorized,
+        topic_id=topic_id,
+    )
+    rows = q.order_by(Flashcard.created_at.desc()).all()
+    return _rows_to_list_items(rows)
 
 
-@router.get("/due", response_model=List[FlashcardResponse])
+@router.get("/due", response_model=List[FlashcardListItem])
 async def get_due_flashcards(
+    study_material_id: Optional[int] = None,
+    uncategorized: bool = False,
+    topic_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Get flashcards due for review"""
+    """Get flashcards due for review, optionally scoped to one deck/course."""
     due_sr = spaced_repetition_service.get_due_flashcards(current_user.id, db)
     flashcard_ids = [sr.flashcard_id for sr in due_sr]
+    if not flashcard_ids:
+        return []
 
-    flashcards = db.query(Flashcard).filter(Flashcard.id.in_(flashcard_ids)).all()
-    return flashcards
+    q = _flashcard_list_query(db, current_user.id).filter(Flashcard.id.in_(flashcard_ids))
+    q = _apply_deck_filters(
+        q,
+        study_material_id=study_material_id,
+        uncategorized=uncategorized,
+        topic_id=topic_id,
+    )
+    rows = q.order_by(Flashcard.id.asc()).all()
+    return _rows_to_list_items(rows)
 
 
-@router.get("/mastered", response_model=List[FlashcardResponse])
+@router.get("/mastered", response_model=List[FlashcardListItem])
 async def get_mastered_flashcards(
+    study_material_id: Optional[int] = None,
+    uncategorized: bool = False,
+    topic_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Get mastered flashcards only"""
-    from app.models import SpacedRepetition
+    """Get mastered flashcards only, optionally scoped to one deck/course."""
     mastered_sr = db.query(SpacedRepetition).filter(
         SpacedRepetition.user_id == current_user.id,
-        SpacedRepetition.mastery_level == "mastered"
+        SpacedRepetition.mastery_level == "mastered",
     ).all()
     flashcard_ids = [sr.flashcard_id for sr in mastered_sr]
     if not flashcard_ids:
         return []
-    flashcards = db.query(Flashcard).filter(
-        Flashcard.id.in_(flashcard_ids),
-        Flashcard.user_id == current_user.id
-    ).all()
-    return flashcards
+
+    q = _flashcard_list_query(db, current_user.id).filter(Flashcard.id.in_(flashcard_ids))
+    q = _apply_deck_filters(
+        q,
+        study_material_id=study_material_id,
+        uncategorized=uncategorized,
+        topic_id=topic_id,
+    )
+    rows = q.order_by(Flashcard.id.asc()).all()
+    return _rows_to_list_items(rows)
 
 
 @router.get("/{flashcard_id}", response_model=FlashcardResponse)

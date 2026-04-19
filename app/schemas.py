@@ -119,6 +119,35 @@ class FlashcardResponse(FlashcardBase):
         from_attributes = True
 
 
+class FlashcardListItem(FlashcardResponse):
+    """Flashcard row with source labels for deck/course browsing in the client."""
+
+    study_material_title: Optional[str] = None
+    topic_name: Optional[str] = None
+
+
+class FlashcardMaterialDeckSummary(BaseModel):
+    id: int
+    title: str
+    file_type: str
+    flashcard_count: int
+
+
+class FlashcardTopicDeckSummary(BaseModel):
+    id: int
+    name: str
+    color_code: Optional[str] = None
+    flashcard_count: int
+
+
+class FlashcardDecksSummaryResponse(BaseModel):
+    """Grouped counts so users can pick a course (material) or topic to study."""
+
+    by_material: List[FlashcardMaterialDeckSummary]
+    by_topic: List[FlashcardTopicDeckSummary]
+    uncategorized_count: int
+
+
 # Spaced Repetition Schemas
 class SpacedRepetitionResponse(BaseModel):
     id: int
