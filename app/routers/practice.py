@@ -3,17 +3,75 @@ Practice Questions and Exams router
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
 from app.database import get_db
-from app.models import User, PracticeQuestion, PracticeExamAttempt, PracticeExamResponse as PracticeExamResponseModel, StudyMaterial
+from app.models import (
+    User,
+    PracticeQuestion,
+    PracticeExamAttempt,
+    PracticeExamResponse as PracticeExamResponseModel,
+    StudyMaterial,
+    DifficultyLevel,
+)
 from app.schemas import PracticeQuestionResponse, PracticeExamCreate
 from app.routers.auth import get_current_user
 from app.services.enhanced_ai_service import EnhancedAIService
 
 router = APIRouter()
 ai_service = EnhancedAIService()
+
+
+def _coerce_difficulty(raw) -> DifficultyLevel:
+    """Map LLM output to DB enum; invalid values cause Postgres/MySQL enum errors."""
+    if raw is None:
+        return DifficultyLevel.MEDIUM
+    s = str(raw).strip().lower()
+    for level in DifficultyLevel:
+        if level.value == s:
+            return level
+    return DifficultyLevel.MEDIUM
+
+
+def _coerce_options(raw) -> list:
+    """Ensure JSON-serializable list of strings for MCQ options."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw if x is not None]
+    if isinstance(raw, dict):
+        return [str(v) for v in raw.values() if v is not None]
+    return [str(raw)]
+
+
+def _coerce_relevance(raw) -> float:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, v))
+
+
+def _practice_question_from_ai(
+    ai_q: dict,
+    *,
+    user_id: int,
+    study_material_id: int,
+    question_type: str,
+) -> PracticeQuestion:
+    return PracticeQuestion(
+        user_id=user_id,
+        study_material_id=study_material_id,
+        question_text=str(ai_q.get("question_text") or "").strip() or "(No question text)",
+        question_type=question_type,
+        correct_answer=str(ai_q.get("correct_answer") or "").strip(),
+        options=_coerce_options(ai_q.get("options")),
+        explanation=str(ai_q.get("explanation") or "").strip() or None,
+        difficulty_level=_coerce_difficulty(ai_q.get("difficulty")),
+        predicted_exam_relevance=_coerce_relevance(ai_q.get("predicted_exam_relevance")),
+    )
 
 
 @router.post("/generate/{material_id}", response_model=List[PracticeQuestionResponse])
@@ -42,24 +100,33 @@ async def generate_practice_questions(
         question_type,
         count
     )
-    
+    if not ai_questions:
+        raise HTTPException(
+            status_code=502,
+            detail="No questions were generated. Check OpenAI API key and quota, then try again.",
+        )
+
     created_questions = []
     for ai_q in ai_questions:
-        question = PracticeQuestion(
+        if not isinstance(ai_q, dict):
+            continue
+        question = _practice_question_from_ai(
+            ai_q,
             user_id=current_user.id,
             study_material_id=material_id,
-            question_text=ai_q.get('question_text', ''),
             question_type=question_type,
-            correct_answer=ai_q.get('correct_answer', ''),
-            options=ai_q.get('options', []),
-            explanation=ai_q.get('explanation', ''),
-            difficulty_level=ai_q.get('difficulty', 'medium'),
-            predicted_exam_relevance=float(ai_q.get('predicted_exam_relevance', 0.5))
         )
         db.add(question)
         created_questions.append(question)
-    
-    db.commit()
+
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save generated questions. Try again or check server logs.",
+        )
     
     return created_questions
 
@@ -95,20 +162,24 @@ async def get_practice_questions(
                 material.extracted_text, "mcq", count or 10
             )
             for ai_q in ai_questions:
-                q = PracticeQuestion(
+                if not isinstance(ai_q, dict):
+                    continue
+                q = _practice_question_from_ai(
+                    ai_q,
                     user_id=current_user.id,
                     study_material_id=material.id,
-                    question_text=ai_q.get('question_text', ''),
-                    question_type='mcq',
-                    correct_answer=ai_q.get('correct_answer', ''),
-                    options=ai_q.get('options', []),
-                    explanation=ai_q.get('explanation', ''),
-                    difficulty_level=ai_q.get('difficulty', 'medium'),
-                    predicted_exam_relevance=float(ai_q.get('predicted_exam_relevance', 0.5))
+                    question_type="mcq",
                 )
                 db.add(q)
                 questions.append(q)
-            db.commit()
+            try:
+                db.commit()
+            except SQLAlchemyError:
+                db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not save generated questions. Try again or check server logs.",
+                )
     
     if count is not None and count > 0:
         questions = questions[:count]

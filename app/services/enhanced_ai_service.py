@@ -109,6 +109,30 @@ def _flashcard_list_from_parsed(result: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _practice_question_list_from_parsed(result: Any) -> List[Dict[str, Any]]:
+    """Normalize LLM output to a list of practice-question dicts."""
+    if isinstance(result, list):
+        return [x for x in result if isinstance(x, dict)]
+    if isinstance(result, dict):
+        for key in (
+            "questions",
+            "practice_questions",
+            "items",
+            "data",
+            "results",
+        ):
+            v = result.get(key)
+            if isinstance(v, list):
+                found = [x for x in v if isinstance(x, dict)]
+                if found:
+                    return found
+        if len(result) == 1:
+            v = next(iter(result.values()))
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+    return []
+
+
 def _parse_llm_json(content: str) -> Any:
     """Parse JSON from chat response; tolerate markdown and extra wrapping text."""
     t = _strip_json_fences(content)
@@ -485,7 +509,7 @@ class EnhancedAIService:
         Text:
         {text[:4000]}
         
-        Return JSON array with questions, no additional text.
+        Return a JSON object: {{"questions": [ ... ]}} with exactly that top-level key. No markdown.
         """
         
         try:
@@ -500,11 +524,12 @@ class EnhancedAIService:
                 response_format={"type": "json_object"}
             )
             
-            import json
-            result = json.loads(response.choices[0].message.content)
-            return result.get('questions', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+            raw = (response.choices[0].message.content or "").strip()
+            result = _parse_llm_json(raw)
+            out = _practice_question_list_from_parsed(result)
+            return out
         except Exception as e:
-            print(f"Error generating practice questions: {e}")
+            logger.warning("Error generating practice questions: %s", e, exc_info=True)
             return []
     
     async def generate_visual_description(
