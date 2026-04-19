@@ -3,11 +3,16 @@ Rich Media router - Video, Audio, LaTeX, Code, Diagrams, Annotations, 3D Models
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import os
 import shutil
+import logging
 from datetime import datetime
+from urllib.parse import urlparse
+
+import httpx
 
 from app.database import get_db
 from app.models import User, Flashcard
@@ -35,6 +40,56 @@ from app.config import settings
 from pydantic import BaseModel
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_MAX_PROXY_IMAGE_BYTES = 12 * 1024 * 1024  # 12 MB
+
+
+def _is_allowed_image_proxy_host(host: str) -> bool:
+    """Restrict proxy to known image hosts (DALL·E Azure blobs, placeholders)."""
+    h = (host or "").lower()
+    if h.endswith(".blob.core.windows.net"):
+        return True
+    if h in ("placehold.co", "www.placehold.co"):
+        return True
+    return False
+
+
+@router.get("/proxy-image")
+async def proxy_image(
+    url: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fetch a remote image server-side and return it. Used by Flutter web where
+    DALL·E blob URLs fail in the browser (CORS / statusCode 0 on NetworkImage).
+    Requires auth to avoid an open proxy.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    if not _is_allowed_image_proxy_host(parsed.hostname or ""):
+        raise HTTPException(status_code=400, detail="Image host not allowed")
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+            r = await client.get(url)
+    except httpx.RequestError as e:
+        logger.warning("proxy_image request error: %s", e)
+        raise HTTPException(status_code=502, detail="Could not fetch image")
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Upstream returned non-200")
+
+    body = r.content
+    if len(body) > _MAX_PROXY_IMAGE_BYTES:
+        raise HTTPException(status_code=502, detail="Image too large")
+
+    content_type = r.headers.get("content-type", "image/png")
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=502, detail="Response is not an image")
+
+    return Response(content=body, media_type=content_type)
 
 
 # Schemas
