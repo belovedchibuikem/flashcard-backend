@@ -76,6 +76,15 @@ _QUESTION_TYPE_ENUM_PG = PG_ENUM(
     create_type=False,
 )
 
+# Matches database/schema_postgresql.sql — practice_questions.difficulty_level uses this type.
+_DIFFICULTY_LEVEL_ENUM_PG = PG_ENUM(
+    "easy",
+    "medium",
+    "hard",
+    name="difficulty_level_enum",
+    create_type=False,
+)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -208,7 +217,10 @@ class PracticeQuestion(Base):
     correct_answer = Column(Text, nullable=False)
     options = Column(JSON)
     explanation = Column(Text)
-    difficulty_level = Column(_enum_as_string(DifficultyLevel), default=DifficultyLevel.MEDIUM)
+    difficulty_level = Column(
+        _DIFFICULTY_LEVEL_ENUM_PG if IS_POSTGRESQL else _enum_as_string(DifficultyLevel),
+        default=DifficultyLevel.MEDIUM,
+    )
     predicted_exam_relevance = Column(DECIMAL(3, 2), default=0.5)
     created_at = Column(DateTime, server_default=func.now())
 
