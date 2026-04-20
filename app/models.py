@@ -3,9 +3,10 @@ SQLAlchemy database models
 """
 
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum, DECIMAL, JSON, Date, BIGINT
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.database import Base, IS_MYSQL
+from app.database import Base, IS_MYSQL, IS_POSTGRESQL
 import enum
 
 # Note: Media models (MediaAttachment, ImageAnnotation, InteractiveDiagram) are defined in app/models/media.py
@@ -62,6 +63,18 @@ def _enum_as_string(enum_class):
         values_callable=lambda obj: [m.value for m in obj],
         native_enum=False,
     )
+
+
+# Matches database/schema_postgresql.sql — DB column is question_type_enum, not VARCHAR.
+_QUESTION_TYPE_ENUM_PG = PG_ENUM(
+    "mcq",
+    "short_answer",
+    "essay",
+    "true_false",
+    "case_study",
+    name="question_type_enum",
+    create_type=False,
+)
 
 
 class User(Base):
@@ -188,7 +201,10 @@ class PracticeQuestion(Base):
     topic_id = Column(Integer, ForeignKey("topics.id"), nullable=True)
     study_material_id = Column(Integer, ForeignKey("study_materials.id"), nullable=True)
     question_text = Column(Text, nullable=False)
-    question_type = Column(String(50), nullable=False)
+    question_type = Column(
+        _QUESTION_TYPE_ENUM_PG if IS_POSTGRESQL else String(50),
+        nullable=False,
+    )
     correct_answer = Column(Text, nullable=False)
     options = Column(JSON)
     explanation = Column(Text)

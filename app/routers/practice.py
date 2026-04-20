@@ -27,6 +27,22 @@ router = APIRouter()
 ai_service = EnhancedAIService()
 logger = logging.getLogger(__name__)
 
+# Must match database/schema_postgresql.sql question_type_enum
+_PRACTICE_QUESTION_TYPES = frozenset(
+    {"mcq", "short_answer", "essay", "true_false", "case_study"}
+)
+
+
+def _normalize_practice_question_type(raw: str) -> str:
+    t = (raw or "mcq").strip().lower()
+    if t in _PRACTICE_QUESTION_TYPES:
+        return t
+    if t in ("multiple_choice", "multiple-choice", "multi"):
+        return "mcq"
+    if t in ("tf", "true/false"):
+        return "true_false"
+    return "mcq"
+
 
 def _coerce_difficulty(raw) -> DifficultyLevel:
     """Map LLM output to DB enum; invalid values cause Postgres/MySQL enum errors."""
@@ -65,7 +81,7 @@ def _practice_question_from_ai(
     study_material_id: int,
     question_type: str,
 ) -> PracticeQuestion:
-    qt = (question_type or "mcq").strip()[:50]
+    qt = _normalize_practice_question_type(question_type)
     rel = Decimal(str(round(_coerce_relevance(ai_q.get("predicted_exam_relevance")), 2)))
     return PracticeQuestion(
         user_id=user_id,
@@ -89,6 +105,7 @@ async def generate_practice_questions(
     db: Session = Depends(get_db)
 ):
     """Generate practice questions from study material"""
+    question_type = _normalize_practice_question_type(question_type)
     material = db.query(StudyMaterial).filter(
         StudyMaterial.id == material_id,
         StudyMaterial.user_id == current_user.id
