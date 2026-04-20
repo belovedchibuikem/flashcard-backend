@@ -52,6 +52,18 @@ def _enum_type(enum_class):
     return Enum(enum_class, values_callable=lambda obj: [m.value for m in obj])
 
 
+def _enum_as_string(enum_class):
+    """
+    Store enum *values* in a string/VARCHAR column (no separate PostgreSQL ENUM type).
+    Avoids CREATE TYPE / value mismatches that break INSERTs on practice_questions etc.
+    """
+    return Enum(
+        enum_class,
+        values_callable=lambda obj: [m.value for m in obj],
+        native_enum=False,
+    )
+
+
 class User(Base):
     __tablename__ = "users"
     
@@ -180,7 +192,7 @@ class PracticeQuestion(Base):
     correct_answer = Column(Text, nullable=False)
     options = Column(JSON)
     explanation = Column(Text)
-    difficulty_level = Column(_enum_type(DifficultyLevel), default=DifficultyLevel.MEDIUM)
+    difficulty_level = Column(_enum_as_string(DifficultyLevel), default=DifficultyLevel.MEDIUM)
     predicted_exam_relevance = Column(DECIMAL(3, 2), default=0.5)
     created_at = Column(DateTime, server_default=func.now())
 

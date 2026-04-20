@@ -2,6 +2,9 @@
 Practice Questions and Exams router
 """
 
+import logging
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -22,6 +25,7 @@ from app.services.enhanced_ai_service import EnhancedAIService
 
 router = APIRouter()
 ai_service = EnhancedAIService()
+logger = logging.getLogger(__name__)
 
 
 def _coerce_difficulty(raw) -> DifficultyLevel:
@@ -61,16 +65,18 @@ def _practice_question_from_ai(
     study_material_id: int,
     question_type: str,
 ) -> PracticeQuestion:
+    qt = (question_type or "mcq").strip()[:50]
+    rel = Decimal(str(round(_coerce_relevance(ai_q.get("predicted_exam_relevance")), 2)))
     return PracticeQuestion(
         user_id=user_id,
         study_material_id=study_material_id,
         question_text=str(ai_q.get("question_text") or "").strip() or "(No question text)",
-        question_type=question_type,
+        question_type=qt,
         correct_answer=str(ai_q.get("correct_answer") or "").strip(),
         options=_coerce_options(ai_q.get("options")),
         explanation=str(ai_q.get("explanation") or "").strip() or None,
         difficulty_level=_coerce_difficulty(ai_q.get("difficulty")),
-        predicted_exam_relevance=_coerce_relevance(ai_q.get("predicted_exam_relevance")),
+        predicted_exam_relevance=rel,
     )
 
 
@@ -91,7 +97,7 @@ async def generate_practice_questions(
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
     
-    if not material.extracted_text:
+    if not (material.extracted_text or "").strip():
         raise HTTPException(status_code=400, detail="Material not processed yet")
     
     # Generate questions using AI
@@ -119,15 +125,27 @@ async def generate_practice_questions(
         db.add(question)
         created_questions.append(question)
 
-    try:
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
+    if not created_questions:
         raise HTTPException(
             status_code=500,
-            detail="Could not save generated questions. Try again or check server logs.",
+            detail="AI returned data but no valid question objects could be built.",
         )
-    
+
+    try:
+        db.commit()
+        for q in created_questions:
+            db.refresh(q)
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.exception("practice questions commit failed")
+        detail = str(getattr(e, "orig", None) or e)
+        if len(detail) > 480:
+            detail = detail[:480] + "…"
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save generated questions: {detail}",
+        )
+
     return created_questions
 
 
@@ -147,7 +165,9 @@ async def get_practice_questions(
     if topic_id:
         query = query.filter(PracticeQuestion.topic_id == topic_id)
     if difficulty:
-        query = query.filter(PracticeQuestion.difficulty_level == difficulty)
+        query = query.filter(
+            PracticeQuestion.difficulty_level == _coerce_difficulty(difficulty)
+        )
     
     questions = query.all()
     
@@ -174,11 +194,17 @@ async def get_practice_questions(
                 questions.append(q)
             try:
                 db.commit()
-            except SQLAlchemyError:
+                for q in questions:
+                    db.refresh(q)
+            except SQLAlchemyError as e:
                 db.rollback()
+                logger.exception("practice auto_generate commit failed")
+                detail = str(getattr(e, "orig", None) or e)
+                if len(detail) > 480:
+                    detail = detail[:480] + "…"
                 raise HTTPException(
                     status_code=500,
-                    detail="Could not save generated questions. Try again or check server logs.",
+                    detail=f"Could not save generated questions: {detail}",
                 )
     
     if count is not None and count > 0:
