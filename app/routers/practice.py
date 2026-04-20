@@ -6,6 +6,7 @@ import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import and_, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -17,9 +18,16 @@ from app.models import (
     PracticeExamAttempt,
     PracticeExamResponse as PracticeExamResponseModel,
     StudyMaterial,
+    Topic,
     DifficultyLevel,
 )
-from app.schemas import PracticeQuestionResponse, PracticeExamCreate
+from app.schemas import (
+    PracticeQuestionResponse,
+    PracticeExamCreate,
+    PracticeDecksSummaryResponse,
+    PracticeMaterialDeckSummary,
+    PracticeTopicDeckSummary,
+)
 from app.routers.auth import get_current_user
 from app.services.enhanced_ai_service import EnhancedAIService
 
@@ -72,6 +80,49 @@ def _coerce_relevance(raw) -> float:
     except (TypeError, ValueError):
         return 0.5
     return max(0.0, min(1.0, v))
+
+
+def _practice_question_rows_query(db: Session, user_id: int):
+    return (
+        db.query(PracticeQuestion, StudyMaterial.title)
+        .outerjoin(
+            StudyMaterial,
+            and_(
+                PracticeQuestion.study_material_id == StudyMaterial.id,
+                StudyMaterial.user_id == user_id,
+            ),
+        )
+        .filter(PracticeQuestion.user_id == user_id)
+    )
+
+
+def _apply_practice_question_filters(
+    q,
+    *,
+    topic_id: Optional[int],
+    study_material_id: Optional[int],
+    uncategorized: bool,
+    difficulty: Optional[str],
+):
+    if topic_id is not None:
+        q = q.filter(PracticeQuestion.topic_id == topic_id)
+    if uncategorized:
+        q = q.filter(PracticeQuestion.study_material_id.is_(None))
+    elif study_material_id is not None:
+        q = q.filter(PracticeQuestion.study_material_id == study_material_id)
+    if difficulty:
+        q = q.filter(PracticeQuestion.difficulty_level == _coerce_difficulty(difficulty))
+    return q
+
+
+def _rows_to_practice_responses(rows) -> List[PracticeQuestionResponse]:
+    out: List[PracticeQuestionResponse] = []
+    for r in rows:
+        pq, title = r[0], r[1]
+        data = PracticeQuestionResponse.model_validate(pq).model_dump()
+        data["study_material_title"] = title
+        out.append(PracticeQuestionResponse(**data))
+    return out
 
 
 def _practice_question_from_ai(
@@ -166,53 +217,128 @@ async def generate_practice_questions(
     return created_questions
 
 
+@router.get("/decks/summary", response_model=PracticeDecksSummaryResponse)
+async def practice_decks_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Counts of practice questions per course (material) and topic — for exam picker UI."""
+    mat_rows = (
+        db.query(
+            StudyMaterial.id,
+            StudyMaterial.title,
+            StudyMaterial.file_type,
+            func.count(PracticeQuestion.id),
+        )
+        .join(PracticeQuestion, PracticeQuestion.study_material_id == StudyMaterial.id)
+        .filter(StudyMaterial.user_id == current_user.id)
+        .group_by(StudyMaterial.id, StudyMaterial.title, StudyMaterial.file_type)
+        .order_by(StudyMaterial.title.asc())
+        .all()
+    )
+    topic_rows = (
+        db.query(
+            Topic.id,
+            Topic.name,
+            Topic.color_code,
+            func.count(PracticeQuestion.id),
+        )
+        .join(PracticeQuestion, PracticeQuestion.topic_id == Topic.id)
+        .filter(Topic.user_id == current_user.id)
+        .group_by(Topic.id, Topic.name, Topic.color_code)
+        .order_by(Topic.name.asc())
+        .all()
+    )
+    uncategorized = (
+        db.query(func.count(PracticeQuestion.id))
+        .filter(
+            PracticeQuestion.user_id == current_user.id,
+            PracticeQuestion.study_material_id.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+    return PracticeDecksSummaryResponse(
+        by_material=[
+            PracticeMaterialDeckSummary(
+                id=r[0],
+                title=r[1],
+                file_type=str(r[2]),
+                question_count=int(r[3]),
+            )
+            for r in mat_rows
+        ],
+        by_topic=[
+            PracticeTopicDeckSummary(
+                id=r[0],
+                name=r[1],
+                color_code=r[2],
+                question_count=int(r[3]),
+            )
+            for r in topic_rows
+        ],
+        uncategorized_count=int(uncategorized),
+    )
+
+
 @router.get("/questions", response_model=List[PracticeQuestionResponse])
 async def get_practice_questions(
     topic_id: Optional[int] = None,
+    study_material_id: Optional[int] = None,
+    uncategorized: bool = False,
     difficulty: Optional[str] = None,
     count: Optional[int] = 10,
     auto_generate: bool = False,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Get practice questions. Use count to limit results.
-    When auto_generate=true and no questions exist, generates from first available material."""
-    query = db.query(PracticeQuestion).filter(PracticeQuestion.user_id == current_user.id)
-    
-    if topic_id:
-        query = query.filter(PracticeQuestion.topic_id == topic_id)
-    if difficulty:
-        query = query.filter(
-            PracticeQuestion.difficulty_level == _coerce_difficulty(difficulty)
+    """Get practice questions. Filter by study_material_id (course deck), topic, or uncategorized only."""
+
+    def fetch_rows():
+        q = _practice_question_rows_query(db, current_user.id)
+        q = _apply_practice_question_filters(
+            q,
+            topic_id=topic_id,
+            study_material_id=study_material_id,
+            uncategorized=uncategorized,
+            difficulty=difficulty,
         )
-    
-    questions = query.all()
-    
-    # Auto-generate from first material when empty and requested
-    if not questions and auto_generate:
+        return q.order_by(PracticeQuestion.id.asc()).all()
+
+    rows = fetch_rows()
+
+    if not rows and auto_generate:
         materials = db.query(StudyMaterial).filter(
             StudyMaterial.user_id == current_user.id
         ).all()
-        material = next((m for m in materials if m.extracted_text and len((m.extracted_text or "").strip()) >= 50), None)
+        material = next(
+            (
+                m
+                for m in materials
+                if m.extracted_text and len((m.extracted_text or "").strip()) >= 50
+            ),
+            None,
+        )
         if material:
             ai_questions = await ai_service.generate_practice_questions(
                 material.extracted_text, "mcq", count or 10
             )
+            created: List[PracticeQuestion] = []
             for ai_q in ai_questions:
                 if not isinstance(ai_q, dict):
                     continue
-                q = _practice_question_from_ai(
+                q_obj = _practice_question_from_ai(
                     ai_q,
                     user_id=current_user.id,
                     study_material_id=material.id,
                     question_type="mcq",
                 )
-                db.add(q)
-                questions.append(q)
+                db.add(q_obj)
+                created.append(q_obj)
             try:
                 db.commit()
-                for q in questions:
-                    db.refresh(q)
+                for q_obj in created:
+                    db.refresh(q_obj)
             except SQLAlchemyError as e:
                 db.rollback()
                 logger.exception("practice auto_generate commit failed")
@@ -223,10 +349,12 @@ async def get_practice_questions(
                     status_code=500,
                     detail=f"Could not save generated questions: {detail}",
                 )
-    
+            rows = fetch_rows()
+
+    items = _rows_to_practice_responses(rows)
     if count is not None and count > 0:
-        questions = questions[:count]
-    return questions
+        items = items[:count]
+    return items
 
 
 @router.get("/exams")
@@ -247,6 +375,8 @@ async def get_recent_exams(
             "correct_answers": e.correct_answers,
             "total_questions": e.total_questions,
             "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+            "exam_label": getattr(e, "exam_label", None),
+            "study_material_id": getattr(e, "study_material_id", None),
         }
         for e in exams
     ]
@@ -259,14 +389,19 @@ async def create_practice_exam(
     db: Session = Depends(get_db)
 ):
     """Create and submit practice exam"""
-    # Create exam attempt
+    exam_label = (exam_data.exam_label or "").strip()
+    if len(exam_label) > 255:
+        exam_label = exam_label[:255]
+
     exam_attempt = PracticeExamAttempt(
         user_id=current_user.id,
         topic_id=exam_data.topic_id,
+        study_material_id=exam_data.study_material_id,
+        exam_label=exam_label or None,
         exam_type=exam_data.exam_type,
         total_questions=len(exam_data.responses),
         correct_answers=sum(1 for r in exam_data.responses if r.is_correct),
-        time_limit_minutes=exam_data.time_limit_minutes
+        time_limit_minutes=exam_data.time_limit_minutes,
     )
     db.add(exam_attempt)
     db.commit()

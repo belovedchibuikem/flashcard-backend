@@ -231,6 +231,8 @@ class PracticeExamAttempt(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     topic_id = Column(Integer, ForeignKey("topics.id"), nullable=True)
+    study_material_id = Column(Integer, ForeignKey("study_materials.id"), nullable=True)
+    exam_label = Column(String(255), nullable=True)
     exam_type = Column(String(20), default="untimed")
     total_questions = Column(Integer, nullable=False)
     correct_answers = Column(Integer, default=0)

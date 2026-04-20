@@ -201,9 +201,33 @@ class PracticeQuestionResponse(BaseModel):
     explanation: Optional[str] = None
     difficulty_level: str
     predicted_exam_relevance: Decimal
+    study_material_id: Optional[int] = None
+    study_material_title: Optional[str] = None
     
     class Config:
         from_attributes = True
+
+
+class PracticeMaterialDeckSummary(BaseModel):
+    id: int
+    title: str
+    file_type: str
+    question_count: int
+
+
+class PracticeTopicDeckSummary(BaseModel):
+    id: int
+    name: str
+    color_code: Optional[str] = None
+    question_count: int
+
+
+class PracticeDecksSummaryResponse(BaseModel):
+    """Course/deck picker for practice exams (counts per uploaded material)."""
+
+    by_material: List[PracticeMaterialDeckSummary]
+    by_topic: List[PracticeTopicDeckSummary]
+    uncategorized_count: int
 
 
 class PracticeExamResponse(BaseModel):
@@ -214,6 +238,8 @@ class PracticeExamResponse(BaseModel):
 
 class PracticeExamCreate(BaseModel):
     topic_id: Optional[int] = None
+    study_material_id: Optional[int] = None
+    exam_label: Optional[str] = None
     exam_type: Optional[str] = "untimed"
     time_limit_minutes: Optional[int] = None
     responses: List[PracticeExamResponse]
