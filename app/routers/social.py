@@ -5,7 +5,7 @@ Social features router - Study buddies, collaborative sessions, comments, rating
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func, desc
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, date, timedelta
 
 from app.database import get_db
@@ -1055,10 +1055,24 @@ async def import_shared_deck(
 class LeaderboardEntry(BaseModel):
     user_id: int
     username: str
-    xp_points: int
+    xp_points: int  # All-time: lifetime XP. Period views: XP earned in that window.
     level: int
     rank: int
     avatar_url: Optional[str] = None
+    study_time_minutes: int = 0  # All-time: profile total. Period: sum in window.
+    flashcards_reviewed: int = 0  # All-time: profile total. Period: sum in window.
+
+
+def _leaderboard_period_bounds(period: str) -> Tuple[Optional[date], date]:
+    """Return (start_date, end_date) inclusive end_date. start_date None = all-time."""
+    end_date = date.today()
+    if period == "daily":
+        return end_date, end_date
+    if period == "weekly":
+        return end_date - timedelta(days=6), end_date
+    if period == "monthly":
+        return end_date - timedelta(days=29), end_date
+    return None, end_date
 
 
 @router.get("/leaderboard", response_model=List[LeaderboardEntry])
@@ -1068,42 +1082,87 @@ async def get_leaderboard(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get leaderboard"""
-    # Calculate date range based on period
-    end_date = date.today()
-    if period == "daily":
-        start_date = end_date
-    elif period == "weekly":
-        start_date = end_date - timedelta(days=7)
-    elif period == "monthly":
-        start_date = end_date - timedelta(days=30)
-    else:  # all_time
-        start_date = None
-    
-    # Get user profiles
-    query = db.query(UserProfile, User).join(
-        User, UserProfile.user_id == User.id
+    """Rank users by XP. Period filters use summed daily activity in the range (not lifetime XP)."""
+    if period not in ("daily", "weekly", "monthly", "all_time"):
+        period = "all_time"
+
+    limit = max(1, min(limit, 500))
+    start_date, end_date = _leaderboard_period_bounds(period)
+
+    if start_date is None:
+        results = (
+            db.query(UserProfile, User)
+            .join(User, UserProfile.user_id == User.id)
+            .order_by(desc(UserProfile.xp_points))
+            .limit(limit)
+            .all()
+        )
+        leaderboard = []
+        for rank, (profile, user) in enumerate(results, start=1):
+            leaderboard.append(
+                {
+                    "user_id": user.id,
+                    "username": user.username,
+                    "xp_points": int(profile.xp_points or 0),
+                    "level": int(profile.level or 1),
+                    "rank": rank,
+                    "avatar_url": user.avatar_url,
+                    "study_time_minutes": int(profile.total_study_time_minutes or 0),
+                    "flashcards_reviewed": int(profile.total_flashcards_reviewed or 0),
+                }
+            )
+        return leaderboard
+
+    pxp = func.coalesce(func.sum(DailyActivity.xp_earned), 0)
+    pcards = func.coalesce(func.sum(DailyActivity.flashcards_studied), 0)
+    pmins = func.coalesce(func.sum(DailyActivity.study_time_minutes), 0)
+
+    activity_rows = (
+        db.query(
+            DailyActivity.user_id.label("uid"),
+            pxp.label("pxp"),
+            pcards.label("pcards"),
+            pmins.label("pmins"),
+        )
+        .filter(
+            DailyActivity.activity_date >= start_date,
+            DailyActivity.activity_date <= end_date,
+        )
+        .group_by(DailyActivity.user_id)
+        .having((pxp + pcards) > 0)
+        .order_by(desc(pxp), desc(pcards))
+        .limit(limit)
+        .all()
     )
-    
-    if start_date:
-        # Filter by activity in period
-        active_users = db.query(DailyActivity.user_id).filter(
-            DailyActivity.activity_date >= start_date
-        ).distinct().subquery()
-        query = query.filter(UserProfile.user_id.in_(db.query(active_users.c.user_id)))
-    
-    # Order by XP
-    results = query.order_by(desc(UserProfile.xp_points)).limit(limit).all()
-    
+
+    if not activity_rows:
+        return []
+
+    user_ids = [int(r.uid) for r in activity_rows]
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+    profiles = {
+        p.user_id: p for p in db.query(UserProfile).filter(UserProfile.user_id.in_(user_ids)).all()
+    }
+
     leaderboard = []
-    for rank, (profile, user) in enumerate(results, start=1):
-        leaderboard.append({
-            "user_id": user.id,
-            "username": user.username,
-            "xp_points": profile.xp_points,
-            "level": profile.level,
-            "rank": rank,
-            "avatar_url": user.avatar_url
-        })
-    
+    rank = 0
+    for row in activity_rows:
+        uid = int(row.uid)
+        user = users.get(uid)
+        if not user:
+            continue
+        rank += 1
+        profile = profiles.get(uid)
+        leaderboard.append(
+            {
+                "user_id": user.id,
+                "username": user.username,
+                "xp_points": int(row.pxp or 0),
+                "level": int(profile.level) if profile else 1,
+                "rank": rank,
+                "avatar_url": user.avatar_url,
+                "study_time_minutes": int(row.pmins or 0),
+                "flashcards_reviewed": int(row.pcards or 0),
+            }
+        )
     return leaderboard
