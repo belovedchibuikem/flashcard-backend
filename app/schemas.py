@@ -59,6 +59,12 @@ class TopicCreate(TopicBase):
     pass
 
 
+class TopicUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color_code: Optional[str] = None
+
+
 class TopicResponse(TopicBase):
     id: int
     user_id: int
@@ -76,6 +82,10 @@ class StudyMaterialBase(BaseModel):
 
 class StudyMaterialCreate(StudyMaterialBase):
     pass
+
+
+class StudyMaterialUpdate(BaseModel):
+    title: Optional[str] = None
 
 
 class StudyMaterialResponse(StudyMaterialBase):

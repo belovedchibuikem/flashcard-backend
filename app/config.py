@@ -2,8 +2,10 @@
 Application configuration settings
 """
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import Any
+import json
 import os
 import logging
 from pathlib import Path
@@ -62,11 +64,36 @@ def _sync_ai_keys_from_process_environ(s: "Settings") -> None:
         s.ANTHROPIC_API_KEY = an
 
 
+def _coerce_cors_origins_env(v: Any) -> str:
+    """Comma-separated, JSON array, or list — avoids pydantic-settings JSON-decoding List[str] from env."""
+    default = "http://localhost:3000,http://localhost:8080,http://localhost:8000"
+    if v is None:
+        return default
+    if isinstance(v, list):
+        return ",".join(str(x).strip() for x in v if str(x).strip()) or default
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return default
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    joined = ",".join(str(x).strip() for x in parsed if str(x).strip())
+                    return joined or default
+            except json.JSONDecodeError:
+                pass
+        return s
+    return str(v)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(_backend_dir / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        # Empty CORS_ORIGINS in the shell must not override .env / defaults with invalid JSON.
+        env_ignore_empty=True,
     )
     # Database
     # Support both standard DATABASE_URL and Vercel Neon integration variables
@@ -123,14 +150,15 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_DAYS: int = int(os.getenv("JWT_EXPIRATION_DAYS", "90"))
     
     # CORS (exact origins; Flutter web dev uses random ports — see allow_origin_regex in main.py)
-    CORS_ORIGINS: List[str] = [
-        x.strip()
-        for x in os.getenv(
-            "CORS_ORIGINS",
-            "http://localhost:3000,http://localhost:8080,http://localhost:8000",
-        ).split(",")
-        if x.strip()
-    ]
+    # Stored as CSV string so env / .env never go through json.loads for List types.
+    CORS_ORIGINS: str = Field(
+        default="http://localhost:3000,http://localhost:8080,http://localhost:8000",
+    )
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v: Any) -> str:
+        return _coerce_cors_origins_env(v)
     
     # Upload settings
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB

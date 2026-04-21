@@ -10,7 +10,15 @@ from typing import List
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 from app.database import get_db
-from app.models import User, ProgressAnalytics, SpacedRepetition, ReviewSession, PracticeExamAttempt, Flashcard
+from app.models import (
+    User,
+    ProgressAnalytics,
+    SpacedRepetition,
+    ReviewSession,
+    PracticeExamAttempt,
+    Flashcard,
+    MasteryLevel,
+)
 from app.schemas import ProgressAnalyticsResponse, ExamReadinessResponse
 from app.routers.auth import get_current_user
 
@@ -40,22 +48,11 @@ async def get_progress(
 
 
 def _get_progress_impl(days: int, topic_id, current_user, db):
-    start_date = date.today() - timedelta(days=days)
-    
-    # Try stored ProgressAnalytics first
-    query = db.query(ProgressAnalytics).filter(
-        ProgressAnalytics.user_id == current_user.id,
-        ProgressAnalytics.date >= start_date
-    )
-    if topic_id:
-        query = query.filter(ProgressAnalytics.topic_id == topic_id)
-    analytics = query.order_by(ProgressAnalytics.date.asc()).all()
-    
-    if analytics:
-        return analytics
-    
-    # Compute from ReviewSession when no stored data
-    from decimal import Decimal
+    """Return one row per calendar day in the range (inclusive of today) for stable charts."""
+    if days < 1:
+        days = 7
+    end = date.today()
+    start = end - timedelta(days=days - 1)
 
     date_expr = _safe_date_expr(ReviewSession.started_at)
     session_query = db.query(
@@ -64,15 +61,15 @@ def _get_progress_impl(days: int, topic_id, current_user, db):
         func.sum(ReviewSession.correct_count).label('correct'),
     ).filter(
         ReviewSession.user_id == current_user.id,
-        date_expr >= start_date
+        date_expr >= start,
+        date_expr <= end,
     )
     if topic_id:
         session_query = session_query.filter(ReviewSession.topic_id == topic_id)
     session_query = session_query.group_by(date_expr)
     rows = session_query.all()
-    
-    # Build daily progress
-    result = []
+
+    by_day = {}
     for row in rows:
         d = row.session_date
         if isinstance(d, datetime):
@@ -80,7 +77,7 @@ def _get_progress_impl(days: int, topic_id, current_user, db):
         studied = int(row.studied or 0)
         correct = int(row.correct or 0)
         mastery = (Decimal(correct) / Decimal(studied) * 100) if studied > 0 else Decimal(0)
-        result.append({
+        by_day[d] = {
             "date": d,
             "flashcards_studied": studied,
             "flashcards_mastered": correct,
@@ -89,10 +86,46 @@ def _get_progress_impl(days: int, topic_id, current_user, db):
             "study_time_minutes": 0,
             "mastery_percentage": mastery,
             "exam_readiness_score": mastery,
-        })
-    
-    # Sort by date ascending for chart
-    result.sort(key=lambda x: x["date"])
+        }
+
+    # Merge stored analytics for days missing from sessions (e.g. legacy data)
+    pa_query = db.query(ProgressAnalytics).filter(
+        ProgressAnalytics.user_id == current_user.id,
+        ProgressAnalytics.date >= start,
+        ProgressAnalytics.date <= end,
+    )
+    if topic_id:
+        pa_query = pa_query.filter(ProgressAnalytics.topic_id == topic_id)
+    for pa in pa_query.all():
+        d = pa.date
+        if d not in by_day:
+            by_day[d] = {
+                "date": d,
+                "flashcards_studied": int(pa.flashcards_studied or 0),
+                "flashcards_mastered": int(pa.flashcards_mastered or 0),
+                "practice_questions_answered": int(pa.practice_questions_answered or 0),
+                "practice_questions_correct": int(pa.practice_questions_correct or 0),
+                "study_time_minutes": int(pa.study_time_minutes or 0),
+                "mastery_percentage": Decimal(pa.mastery_percentage or 0),
+                "exam_readiness_score": Decimal(pa.exam_readiness_score or 0),
+            }
+
+    result = []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        if d in by_day:
+            result.append(by_day[d])
+        else:
+            result.append({
+                "date": d,
+                "flashcards_studied": 0,
+                "flashcards_mastered": 0,
+                "practice_questions_answered": 0,
+                "practice_questions_correct": 0,
+                "study_time_minutes": 0,
+                "mastery_percentage": Decimal(0),
+                "exam_readiness_score": Decimal(0),
+            })
     return result
 
 
@@ -116,27 +149,50 @@ async def get_exam_readiness(
 
 
 def _get_readiness_impl(topic_id, current_user, db):
-    # Get mastery statistics
+    # Scope flashcards for this user (optionally by topic)
+    fc_q = db.query(Flashcard).filter(Flashcard.user_id == current_user.id)
+    if topic_id:
+        fc_q = fc_q.filter(Flashcard.topic_id == topic_id)
+    total_user_cards = fc_q.count()
+
+    # Mastery statistics from spaced repetition rows
     sr_query = db.query(SpacedRepetition).filter(
         SpacedRepetition.user_id == current_user.id
     )
-    
+
     if topic_id:
-        flashcards = db.query(Flashcard).filter(Flashcard.topic_id == topic_id).all()
+        flashcards = db.query(Flashcard).filter(
+            Flashcard.user_id == current_user.id,
+            Flashcard.topic_id == topic_id,
+        ).all()
         flashcard_ids = [f.id for f in flashcards]
-        sr_query = sr_query.filter(SpacedRepetition.flashcard_id.in_(flashcard_ids))
-    
-    spaced_repetitions = sr_query.all()
-    
+        if flashcard_ids:
+            sr_query = sr_query.filter(SpacedRepetition.flashcard_id.in_(flashcard_ids))
+            spaced_repetitions = sr_query.all()
+        else:
+            spaced_repetitions = []
+    else:
+        spaced_repetitions = sr_query.all()
+
     total_flashcards = len(spaced_repetitions)
-    mastered = sum(1 for sr in spaced_repetitions if sr.mastery_level == "mastered")
-    reviewing = sum(1 for sr in spaced_repetitions if sr.mastery_level == "reviewing")
-    
+    mastered = sum(
+        1 for sr in spaced_repetitions if sr.mastery_level == MasteryLevel.MASTERED
+    )
+    reviewing = sum(
+        1 for sr in spaced_repetitions if sr.mastery_level == MasteryLevel.REVIEWING
+    )
+
     # Calculate overall readiness
-    if total_flashcards == 0:
+    if total_user_cards == 0:
         overall_readiness = 0.0
+    elif total_flashcards == 0:
+        # Cards exist but no review history yet — show partial readiness from inventory
+        overall_readiness = 25.0
     else:
         overall_readiness = ((mastered * 1.0 + reviewing * 0.6) / total_flashcards) * 100
+        if total_user_cards > total_flashcards:
+            # Blend down when only some cards have been studied once
+            overall_readiness = overall_readiness * (total_flashcards / total_user_cards)
     
     # Get practice exam performance
     exam_query = db.query(PracticeExamAttempt).filter(
@@ -181,7 +237,7 @@ async def get_stats(
         # Mastered flashcards
         mastered_sr = db.query(SpacedRepetition).filter(
             SpacedRepetition.user_id == current_user.id,
-            SpacedRepetition.mastery_level == "mastered"
+            SpacedRepetition.mastery_level == MasteryLevel.MASTERED,
         ).count()
         
         # Study sessions

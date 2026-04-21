@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models import User, Topic
-from app.schemas import TopicCreate, TopicResponse
+from app.schemas import TopicCreate, TopicResponse, TopicUpdate
 from app.routers.auth import get_current_user
 
 router = APIRouter()
@@ -57,6 +57,34 @@ async def get_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
     
+    return topic
+
+
+@router.patch("/{topic_id}", response_model=TopicResponse)
+async def update_topic(
+    topic_id: int,
+    body: TopicUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Rename or update a topic (subject deck)."""
+    topic = db.query(Topic).filter(
+        Topic.id == topic_id,
+        Topic.user_id == current_user.id
+    ).first()
+
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    if body.name is not None:
+        topic.name = body.name.strip()
+    if body.description is not None:
+        topic.description = body.description
+    if body.color_code is not None:
+        topic.color_code = body.color_code
+
+    db.commit()
+    db.refresh(topic)
     return topic
 
 

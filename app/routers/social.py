@@ -12,7 +12,7 @@ from app.database import get_db
 from app.models import (
     User, StudyBuddy, CollaborativeSession, CollaborativeSessionParticipant,
     FlashcardComment, DeckRating, Flashcard, StudyGroup, StudyGroupMember,
-    SharedDeck, Topic, UserProfile, DailyActivity
+    SharedDeck, Topic, UserProfile, DailyActivity, StudyMaterial
 )
 from app.routers.auth import get_current_user
 from pydantic import BaseModel
@@ -138,14 +138,34 @@ async def get_study_buddies(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get user's study buddies"""
+    """Get user's study buddies.
+    For status_filter=pending, returns **incoming** requests (others asked you).
+    Accepted/rejected rows use the normal direction: relationships you initiated
+    are listed with buddy_id = the other user."""
+    if status_filter == "pending":
+        incoming = db.query(StudyBuddy, User).join(
+            User, StudyBuddy.user_id == User.id
+        ).filter(
+            StudyBuddy.buddy_id == current_user.id,
+            StudyBuddy.status == "pending"
+        ).all()
+        return [
+            {
+                "id": sb.id,
+                "buddy_id": sb.user_id,
+                "buddy_username": user.username,
+                "status": sb.status
+            }
+            for sb, user in incoming
+        ]
+
     query = db.query(StudyBuddy, User).join(
         User, StudyBuddy.buddy_id == User.id
     ).filter(StudyBuddy.user_id == current_user.id)
-    
+
     if status_filter:
         query = query.filter(StudyBuddy.status == status_filter)
-    
+
     results = query.all()
     return [
         {
@@ -180,6 +200,29 @@ async def accept_buddy_request(
     db.commit()
     
     return {"message": "Buddy request accepted"}
+
+
+@router.put("/buddies/{buddy_id}/reject")
+async def reject_buddy_request(
+    buddy_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Decline an incoming study buddy request (buddy_id = requester's user id)."""
+    pending = db.query(StudyBuddy).filter(
+        and_(
+            StudyBuddy.user_id == buddy_id,
+            StudyBuddy.buddy_id == current_user.id,
+            StudyBuddy.status == "pending"
+        )
+    ).first()
+
+    if not pending:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    db.delete(pending)
+    db.commit()
+    return {"message": "Buddy request declined"}
 
 
 # User search for Study Buddies
@@ -793,6 +836,13 @@ async def join_study_group(
 
 
 # Shared Decks Endpoints
+class SharedDeckPublish(BaseModel):
+    name: str
+    description: Optional[str] = None
+    topic_id: Optional[int] = None
+    study_material_id: Optional[int] = None
+
+
 class SharedDeckResponse(BaseModel):
     id: int
     name: str
@@ -807,6 +857,89 @@ class SharedDeckResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+@router.post("/shared-decks", response_model=SharedDeckResponse)
+async def publish_shared_deck(
+    body: SharedDeckPublish,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Publish a deck (all flashcards in a topic or under a study material) to the shared library."""
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    if (body.topic_id is None) == (body.study_material_id is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of topic_id or study_material_id",
+        )
+
+    topic_id = None
+    study_material_id = None
+    if body.topic_id is not None:
+        topic = db.query(Topic).filter(
+            Topic.id == body.topic_id,
+            Topic.user_id == current_user.id,
+        ).first()
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        topic_id = topic.id
+        q = db.query(Flashcard).filter(
+            Flashcard.user_id == current_user.id,
+            Flashcard.topic_id == topic_id,
+        )
+    else:
+        material = db.query(StudyMaterial).filter(
+            StudyMaterial.id == body.study_material_id,
+            StudyMaterial.user_id == current_user.id,
+        ).first()
+        if not material:
+            raise HTTPException(status_code=404, detail="Study material not found")
+        study_material_id = material.id
+        q = db.query(Flashcard).filter(
+            Flashcard.user_id == current_user.id,
+            Flashcard.study_material_id == study_material_id,
+        )
+
+    card_count = q.count()
+    if card_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No flashcards in this deck. Add cards before sharing.",
+        )
+
+    deck = SharedDeck(
+        user_id=current_user.id,
+        topic_id=topic_id,
+        study_material_id=study_material_id,
+        name=body.name.strip(),
+        description=body.description,
+        is_public=True,
+        flashcard_count=card_count,
+        import_count=0,
+    )
+    db.add(deck)
+    db.commit()
+    db.refresh(deck)
+
+    creator = db.query(User).filter(User.id == current_user.id).first()
+    topic_name = None
+    if deck.topic_id:
+        t = db.query(Topic).filter(Topic.id == deck.topic_id).first()
+        topic_name = t.name if t else None
+
+    return {
+        "id": deck.id,
+        "name": deck.name,
+        "description": deck.description,
+        "creator_username": creator.username if creator else current_user.username,
+        "topic_name": topic_name,
+        "flashcard_count": deck.flashcard_count,
+        "import_count": deck.import_count,
+        "average_rating": 0.0,
+        "total_ratings": 0,
+        "created_at": deck.created_at,
+    }
 
 
 @router.get("/shared-decks", response_model=List[SharedDeckResponse])
@@ -877,12 +1010,17 @@ async def import_shared_deck(
     
     if not shared_deck.is_public:
         raise HTTPException(status_code=403, detail="Deck is not public")
-    
-    # Get flashcards from the original topic
-    original_flashcards = db.query(Flashcard).filter(
-        Flashcard.topic_id == shared_deck.topic_id
-    ).all()
-    
+
+    q = db.query(Flashcard).filter(Flashcard.user_id == shared_deck.user_id)
+    if shared_deck.topic_id is not None:
+        q = q.filter(Flashcard.topic_id == shared_deck.topic_id)
+    elif getattr(shared_deck, "study_material_id", None) is not None:
+        q = q.filter(Flashcard.study_material_id == shared_deck.study_material_id)
+    else:
+        raise HTTPException(status_code=400, detail="Shared deck has no source topic or material")
+
+    original_flashcards = q.all()
+
     if not original_flashcards:
         raise HTTPException(status_code=404, detail="No flashcards found in shared deck")
     

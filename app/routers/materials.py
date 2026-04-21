@@ -11,7 +11,7 @@ import mimetypes
 from datetime import datetime
 from app.database import get_db
 from app.models import User, StudyMaterial, ProcessingStatus, FileType
-from app.schemas import StudyMaterialResponse, StudyMaterialCreate
+from app.schemas import StudyMaterialResponse, StudyMaterialCreate, StudyMaterialUpdate
 from app.routers.auth import get_current_user
 from app.services.simple_ocr_service import SimpleOCRService
 from app.services.enhanced_ai_service import EnhancedAIService
@@ -260,6 +260,33 @@ async def get_material(
     if not material:
         raise HTTPException(status_code=404, detail="Material not found")
     
+    return material
+
+
+@router.patch("/{material_id}", response_model=StudyMaterialResponse)
+async def update_material(
+    material_id: int,
+    body: StudyMaterialUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Rename a study material (upload deck title shown in the app)."""
+    material = db.query(StudyMaterial).filter(
+        StudyMaterial.id == material_id,
+        StudyMaterial.user_id == current_user.id
+    ).first()
+
+    if not material:
+        raise HTTPException(status_code=404, detail="Material not found")
+
+    if body.title is not None:
+        t = body.title.strip()
+        if not t:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        material.title = t[:255]
+
+    db.commit()
+    db.refresh(material)
     return material
 
 
