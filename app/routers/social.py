@@ -12,12 +12,51 @@ from app.database import get_db
 from app.models import (
     User, StudyBuddy, CollaborativeSession, CollaborativeSessionParticipant,
     FlashcardComment, DeckRating, Flashcard, StudyGroup, StudyGroupMember,
-    SharedDeck, Topic, UserProfile, DailyActivity, StudyMaterial
+    SharedDeck, Topic, UserProfile, DailyActivity, StudyMaterial, FlashcardType,
+    DifficultyLevel,
 )
 from app.routers.auth import get_current_user
+from app.routers.flashcards import _coerce_tags
+from app.services.spaced_repetition import SpacedRepetitionService
 from pydantic import BaseModel
 
 router = APIRouter()
+spaced_repetition_service = SpacedRepetitionService()
+
+
+def _clamp_importance(value) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 5
+    return max(1, min(10, n))
+
+
+def _coerce_enum_member(enum_cls, value, default):
+    if value is None:
+        return default
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_cls(value)
+        except ValueError:
+            pass
+    return default
+
+
+def _trunc500(value):
+    if value is None:
+        return None
+    s = str(value)
+    return s if len(s) <= 500 else s[:500]
+
+
+def _trunc_str(value, max_len: int):
+    if value is None:
+        return None
+    s = str(value)
+    return s if len(s) <= max_len else s[:max_len]
 
 
 # Schemas
@@ -1004,6 +1043,18 @@ async def import_shared_deck(
     db: Session = Depends(get_db)
 ):
     """Import a shared deck"""
+    if topic_id is not None:
+        own_topic = (
+            db.query(Topic)
+            .filter(Topic.id == topic_id, Topic.user_id == current_user.id)
+            .first()
+        )
+        if not own_topic:
+            raise HTTPException(
+                status_code=400,
+                detail="Topic not found or does not belong to the current user",
+            )
+
     shared_deck = db.query(SharedDeck).filter(SharedDeck.id == deck_id).first()
     if not shared_deck:
         raise HTTPException(status_code=404, detail="Shared deck not found")
@@ -1024,7 +1075,6 @@ async def import_shared_deck(
     if not original_flashcards:
         raise HTTPException(status_code=404, detail="No flashcards found in shared deck")
     
-    # Create new flashcards for the user
     imported_count = 0
     for original_card in original_flashcards:
         new_card = Flashcard(
@@ -1032,16 +1082,35 @@ async def import_shared_deck(
             topic_id=topic_id,
             question=original_card.question,
             answer=original_card.answer,
-            flashcard_type=original_card.flashcard_type,
-            difficulty_level=original_card.difficulty_level,
-            tags=original_card.tags,
-            importance_score=original_card.importance_score,
-            mnemonic_device=original_card.mnemonic_device
+            flashcard_type=_coerce_enum_member(
+                FlashcardType, original_card.flashcard_type, FlashcardType.CONCEPT
+            ),
+            difficulty_level=_coerce_enum_member(
+                DifficultyLevel, original_card.difficulty_level, DifficultyLevel.MEDIUM
+            ),
+            visual_aid_url=_trunc500(original_card.visual_aid_url),
+            tags=_coerce_tags(original_card.tags),
+            importance_score=_clamp_importance(original_card.importance_score),
+            mnemonic_device=original_card.mnemonic_device,
+            video_url=_trunc500(original_card.video_url),
+            audio_url=_trunc500(original_card.audio_url),
+            latex_content=original_card.latex_content,
+            code_content=original_card.code_content,
+            code_language=_trunc_str(original_card.code_language, 50),
+            diagram_data=original_card.diagram_data,
+            annotated_image_url=_trunc500(original_card.annotated_image_url),
+            model_3d_url=_trunc500(original_card.model_3d_url),
+            model_3d_format=_trunc_str(
+                getattr(original_card, "model_3d_format", None), 20
+            ),
         )
         db.add(new_card)
+        db.flush()
+        spaced_repetition_service.initialize_spaced_repetition(
+            current_user.id, new_card.id, db, commit=False
+        )
         imported_count += 1
-    
-    # Update import count
+
     shared_deck.import_count += 1
     db.commit()
     

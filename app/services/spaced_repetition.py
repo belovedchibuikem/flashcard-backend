@@ -68,7 +68,7 @@ class SpacedRepetitionService:
         )
 
     def initialize_spaced_repetition(
-        self, user_id: int, flashcard_id: int, db
+        self, user_id: int, flashcard_id: int, db, *, commit: bool = True
     ) -> SpacedRepetition:
         next_review = datetime.now()
 
@@ -83,8 +83,9 @@ class SpacedRepetitionService:
         )
 
         db.add(sr)
-        db.commit()
-        db.refresh(sr)
+        if commit:
+            db.commit()
+            db.refresh(sr)
 
         return sr
 
