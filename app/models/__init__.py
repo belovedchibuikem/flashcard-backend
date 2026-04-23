@@ -25,6 +25,7 @@ if os.path.exists(_models_file_path):
     SpacedRepetition = models_module.SpacedRepetition
     ReviewSession = models_module.ReviewSession
     ReviewResponse = models_module.ReviewResponse
+    ReviewIdempotencyKey = models_module.ReviewIdempotencyKey
     PracticeQuestion = models_module.PracticeQuestion
     PracticeExamAttempt = models_module.PracticeExamAttempt
     PracticeExamResponse = models_module.PracticeExamResponse
@@ -79,7 +80,7 @@ __all__ = [
     # Core models
     'User', 'Topic', 'StudyMaterial', 'Flashcard',
     # Spaced repetition
-    'SpacedRepetition', 'ReviewSession', 'ReviewResponse',
+    'SpacedRepetition', 'ReviewSession', 'ReviewResponse', 'ReviewIdempotencyKey',
     # Practice
     'PracticeQuestion', 'PracticeExamAttempt', 'PracticeExamResponse',
     # Analytics
