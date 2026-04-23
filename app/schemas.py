@@ -2,6 +2,8 @@
 Pydantic schemas for request/response validation
 """
 
+from __future__ import annotations
+
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
@@ -124,7 +126,9 @@ class FlashcardResponse(FlashcardBase):
     visual_aid_url: Optional[str] = None
     mnemonic_device: Optional[str] = None
     created_at: datetime
-    
+    """SM-2 row for the current user, when any (enables fully offline client scheduling)."""
+    spaced_repetition: Optional[SpacedRepetitionSnapshot] = None
+
     class Config:
         from_attributes = True
 
@@ -174,6 +178,21 @@ class SpacedRepetitionResponse(BaseModel):
         from_attributes = True
 
 
+class SpacedRepetitionSnapshot(BaseModel):
+    """Embed on flashcard payloads; matches ``SpacedRepetition`` (minus id/user ids)."""
+    ease_factor: Decimal
+    interval_days: int
+    repetitions: int
+    last_reviewed_at: Optional[datetime] = None
+    next_review_at: Optional[datetime] = None
+    mastery_level: str
+    consecutive_correct: int
+    consecutive_incorrect: int
+
+    class Config:
+        from_attributes = True
+
+
 # Review Session Schemas
 class ReviewResponseCreate(BaseModel):
     flashcard_id: int
@@ -186,6 +205,8 @@ class ReviewSessionCreate(BaseModel):
     session_type: str
     topic_id: Optional[int] = None
     responses: List[ReviewResponseCreate]
+    """If the client resends the same key (e.g. after timeout), the same session is returned."""
+    idempotency_key: Optional[str] = None
 
 
 class ReviewSessionResponse(BaseModel):

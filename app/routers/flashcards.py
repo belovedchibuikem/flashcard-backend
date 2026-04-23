@@ -5,10 +5,19 @@ Flashcards router
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from datetime import datetime
 from app.database import get_db
-from app.models import User, Flashcard, StudyMaterial, Topic, SpacedRepetition, ReviewSession, ReviewResponse
+from app.models import (
+    User,
+    Flashcard,
+    StudyMaterial,
+    Topic,
+    SpacedRepetition,
+    ReviewSession,
+    ReviewResponse,
+    ReviewIdempotencyKey,
+)
 from app.schemas import (
     FlashcardCreate,
     FlashcardResponse,
@@ -18,6 +27,7 @@ from app.schemas import (
     FlashcardTopicDeckSummary,
     ReviewSessionCreate,
     ReviewSessionResponse,
+    SpacedRepetitionSnapshot,
 )
 from app.routers.auth import get_current_user
 from app.services.enhanced_ai_service import EnhancedAIService
@@ -68,14 +78,60 @@ def _apply_deck_filters(
     return q
 
 
-def _rows_to_list_items(rows: List[Tuple]) -> List[FlashcardListItem]:
+def _mastery_to_str(m) -> str:
+    if m is None:
+        return "learning"
+    if hasattr(m, "value"):
+        return str(m.value)
+    return str(m)
+
+
+def _sr_to_snapshot(sr: SpacedRepetition) -> SpacedRepetitionSnapshot:
+    return SpacedRepetitionSnapshot(
+        ease_factor=sr.ease_factor,
+        interval_days=sr.interval_days,
+        repetitions=sr.repetitions,
+        last_reviewed_at=sr.last_reviewed_at,
+        next_review_at=sr.next_review_at,
+        mastery_level=_mastery_to_str(sr.mastery_level),
+        consecutive_correct=sr.consecutive_correct,
+        consecutive_incorrect=sr.consecutive_incorrect,
+    )
+
+
+def _sr_map_by_flashcard_id(
+    db: Session, user_id: int, flashcard_ids: List[int]
+) -> Dict[int, SpacedRepetitionSnapshot]:
+    if not flashcard_ids:
+        return {}
+    q = (
+        db.query(SpacedRepetition)
+        .filter(
+            SpacedRepetition.user_id == user_id,
+            SpacedRepetition.flashcard_id.in_(flashcard_ids),
+        )
+    )
+    return {r.flashcard_id: _sr_to_snapshot(r) for r in q.all()}
+
+
+def _rows_to_list_items(
+    db: Session, user_id: int, rows: List[Tuple]
+) -> List[FlashcardListItem]:
+    if not rows:
+        return []
+    card_ids = [row[0].id for row in rows]
+    sr_map = _sr_map_by_flashcard_id(db, user_id, card_ids)
     out: List[FlashcardListItem] = []
     for row in rows:
         card, mat_title, topic_name = row[0], row[1], row[2]
         data = FlashcardResponse.model_validate(card).model_dump()
         data["study_material_title"] = mat_title
         data["topic_name"] = topic_name
-        out.append(FlashcardListItem(**data))
+        if sr_map.get(card.id) is not None:
+            data["spaced_repetition"] = sr_map[card.id]
+        else:
+            data["spaced_repetition"] = None
+        out.append(FlashcardListItem.model_validate(data))
     return out
 
 
@@ -295,7 +351,7 @@ async def get_flashcards(
         topic_id=topic_id,
     )
     rows = q.order_by(Flashcard.created_at.desc()).all()
-    return _rows_to_list_items(rows)
+    return _rows_to_list_items(db, current_user.id, rows)
 
 
 @router.get("/due", response_model=List[FlashcardListItem])
@@ -306,21 +362,28 @@ async def get_due_flashcards(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get flashcards due for review, optionally scoped to one deck/course."""
+    """Get flashcards due for review (SM-2 order), optionally scoped to one deck/course."""
     due_sr = spaced_repetition_service.get_due_flashcards(current_user.id, db)
-    flashcard_ids = [sr.flashcard_id for sr in due_sr]
-    if not flashcard_ids:
+    if not due_sr:
         return []
 
-    q = _flashcard_list_query(db, current_user.id).filter(Flashcard.id.in_(flashcard_ids))
+    q = _flashcard_list_query(db, current_user.id)
     q = _apply_deck_filters(
         q,
         study_material_id=study_material_id,
         uncategorized=uncategorized,
         topic_id=topic_id,
     )
-    rows = q.order_by(Flashcard.id.asc()).all()
-    return _rows_to_list_items(rows)
+    rows = q.all()
+    by_id = {row[0].id: row for row in rows}
+    ordered_rows: List[Tuple] = [
+        by_id[sr.flashcard_id]
+        for sr in due_sr
+        if sr.flashcard_id in by_id
+    ]
+    if not ordered_rows:
+        return []
+    return _rows_to_list_items(db, current_user.id, ordered_rows)
 
 
 @router.get("/mastered", response_model=List[FlashcardListItem])
@@ -348,7 +411,7 @@ async def get_mastered_flashcards(
         topic_id=topic_id,
     )
     rows = q.order_by(Flashcard.id.asc()).all()
-    return _rows_to_list_items(rows)
+    return _rows_to_list_items(db, current_user.id, rows)
 
 
 @router.get("/{flashcard_id}", response_model=FlashcardResponse)
@@ -365,8 +428,20 @@ async def get_flashcard(
     
     if not flashcard:
         raise HTTPException(status_code=404, detail="Flashcard not found")
-    
-    return flashcard
+    sr = (
+        db.query(SpacedRepetition)
+        .filter(
+            SpacedRepetition.user_id == current_user.id,
+            SpacedRepetition.flashcard_id == flashcard_id,
+        )
+        .first()
+    )
+    data = FlashcardResponse.model_validate(flashcard).model_dump()
+    if sr:
+        data["spaced_repetition"] = _sr_to_snapshot(sr)
+    else:
+        data["spaced_repetition"] = None
+    return FlashcardResponse.model_validate(data)
 
 
 @router.post("/review", response_model=ReviewSessionResponse)
@@ -376,6 +451,23 @@ async def create_review_session(
     db: Session = Depends(get_db)
 ):
     """Create a review session and record responses"""
+    if review_data.idempotency_key:
+        found = (
+            db.query(ReviewIdempotencyKey)
+            .filter(
+                ReviewIdempotencyKey.user_id == current_user.id,
+                ReviewIdempotencyKey.idempotency_key == review_data.idempotency_key,
+            )
+            .first()
+        )
+        if found:
+            prev = (
+                db.query(ReviewSession)
+                .filter(ReviewSession.id == found.review_session_id)
+                .first()
+            )
+            if prev:
+                return prev
     # Create review session
     session = ReviewSession(
         user_id=current_user.id,
@@ -416,6 +508,14 @@ async def create_review_session(
             )
     
     session.completed_at = datetime.now()
+    if review_data.idempotency_key:
+        db.add(
+            ReviewIdempotencyKey(
+                user_id=current_user.id,
+                idempotency_key=review_data.idempotency_key,
+                review_session_id=session.id,
+            )
+        )
     db.commit()
     db.refresh(session)
     

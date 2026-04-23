@@ -2,7 +2,21 @@
 SQLAlchemy database models
 """
 
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Enum, DECIMAL, JSON, Date, BIGINT
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Enum,
+    DECIMAL,
+    JSON,
+    Date,
+    BIGINT,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -200,6 +214,19 @@ class ReviewResponse(Base):
     response_time_seconds = Column(Integer)
     confidence_level = Column(String(20))
     reviewed_at = Column(DateTime, server_default=func.now())
+
+
+class ReviewIdempotencyKey(Base):
+    __tablename__ = "review_idempotency"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    idempotency_key = Column(String(64), nullable=False)
+    review_session_id = Column(Integer, ForeignKey("review_sessions.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_review_idempotency_user_key"),
+    )
 
 
 class PracticeQuestion(Base):
